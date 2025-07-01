@@ -1,0 +1,37 @@
+[project]
+name = "vintch_model"
+version = "0.0.1"
+authors = [
+    { name = "CCN neuroRSE" }
+]
+description = "Implementation of the Vintch model for V1 neurons"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }  # or your actual license
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12"
+]
+dependencies = [
+    "numpy>=1.20",
+    "einops"
+]
+
+[project.optional-dependencies]
+pytorch = ["torch>=1.8"]
+jax = ["jax>=0.4.28"]
+
+[project.urls]
+Repository = "https://github.com/flatironinstitute/vintch-v1-model"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["vintch_model"]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
