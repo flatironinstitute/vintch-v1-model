@@ -18,11 +18,12 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.20",
-    "einops"
+    "einops",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
-pytorch = ["torch>=1.8"]
+torch = ["torch>=1.8"]
 jax = ["jax>=0.4.28"]
 
 [project.urls]
