@@ -54,7 +54,7 @@ class SubunitModel:
         self.n_channels = n_channels
         self.backend_class = get_backend(backend)
         self._kernels = self.backend_class.randn(
-            (n_channels, kernel_time_depth, kernel_size, kernel_size)
+            (n_channels, 1, kernel_time_depth, kernel_size, kernel_size)
         )
         if pooling_in_time:
             self._pooling_weights = self.backend_class.randn(
@@ -63,7 +63,7 @@ class SubunitModel:
         else:
             self._pooling_weights = self.backend_class.randn((n_channels, n_dim, n_dim))
         self.pooling_in_time = pooling_in_time
-        self._pooling_biases = self.backend_class.randn((n_channels,))
+        self._pooling_biases = self.backend_class.randn((n_channels, 1))
         self.nonlinearities_chn = [
             TentNonlinearity(n_basis_funcs, soft=True, backend=self.backend_class.name)
             for _ in range(n_channels)
@@ -89,9 +89,9 @@ class SubunitModel:
     @kernels.setter
     def kernels(self, new_kernels: Any):
         """Setter for kernel filters."""
-        assert new_kernels.shape == self._kernels.shape, (
-            f"Expected kernel shape to be {self._kernels.shape}, got {new_kernels.shape} instead."
-        )
+        assert (
+            new_kernels.shape == self._kernels.shape
+        ), f"Expected kernel shape to be {self._kernels.shape}, got {new_kernels.shape} instead."
         self.backend_class.check_input_type(new_kernels)
         self._kernels = new_kernels
 
@@ -102,9 +102,9 @@ class SubunitModel:
     @pooling_weights.setter
     def pooling_weights(self, weights: Any):
         """Setter for pooling weights."""
-        assert weights.shape == self._pooling_weights.shape, (
-            f"Expected pooling weights shape to be {self._pooling_weights.shape}, got {weights.shape} instead."
-        )
+        assert (
+            weights.shape == self._pooling_weights.shape
+        ), f"Expected pooling weights shape to be {self._pooling_weights.shape}, got {weights.shape} instead."
         self.backend_class.check_input_type(weights)
         self._pooling_weights = weights
 
@@ -115,9 +115,9 @@ class SubunitModel:
     @pooling_biases.setter
     def pooling_biases(self, biases: Any):
         """Setter for pooling biases."""
-        assert biases.shape == self._pooling_biases.shape, (
-            f"Expected pooling biases shape to be {self._pooling_biases.shape}, got {biases.shape} instead."
-        )
+        assert (
+            biases.shape == self._pooling_biases.shape
+        ), f"Expected pooling biases shape to be {self._pooling_biases.shape}, got {biases.shape} instead."
         self.backend_class.check_input_type(biases)
         self._pooling_biases = biases
 
@@ -126,40 +126,53 @@ class SubunitModel:
         Forward pass through the whole model.
         """
         self.backend_class.check_input_type(x)
-        generator_signal = self.generator_forward(x)  # [T]
-        out = self.nonlinearity_pass(generator_signal, self.nonlinearity_out)  # [T]
+        # ensure the input is 5D and the second dimension is 1 (grayscale)
+        if x.ndim != 5 or x.shape[1] != 1:
+            raise ValueError(
+                f"Input must be a 5D tensor with shape [batch, {self.n_channels}, time, height, width], got {x.shape} instead."
+            )
+        generator_signal = self.generator_forward(x)  # [batch, time]
+        out = self.nonlinearity_out.transform(generator_signal)  # [batch, time]
         return out
 
     def generator_forward(self, x):
-        outputs = []
-        for c in range(self.n_channels):
-            convolved = self.convolve(x, self.kernels[c])  # [T, H, W]
-            activated = self.nonlinearity_pass(
-                convolved, self.nonlinearities_chn[c]
-            )  # [T, H, W]
-            pooled = self.weighted_pooling(
-                activated, self.pooling_weights[c], biases=self.pooling_biases[c]
-            )  # [T]
-            outputs.append(pooled)
-
-        output = self.backend_class.lib.stack(outputs).sum(axis=0)  # [T]
+        convolved = self.convolve(
+            x, self.kernels
+        )  # [batch, channels, time, height, width]
+        activated = self.nonlinearity_pass(
+            convolved, self.nonlinearities_chn
+        )  # [batch, channels, time, height, width]
+        pooled = self.weighted_pooling(
+            activated, self.pooling_weights, biases=self.pooling_biases
+        )  # [batch, channels, time]
+        output = pooled.sum(axis=1)  # [batch, time]
         return output
 
     def convolve(self, x, kernel):
         return self.backend_class.convolve(x, kernel)
 
-    def nonlinearity_pass(self, x, nonlinearity):
-        return nonlinearity.transform(x)
+    def nonlinearity_pass(self, x, nonlinearities):
+        transformed = [
+            nonlinearity.transform(x[:, c])
+            for c, nonlinearity in enumerate(nonlinearities)
+        ]
+        return self.backend_class.lib.stack(transformed, axis=1)
 
     def weighted_pooling(self, x, pooling_weights, biases=None):
         if self.pooling_in_time:
             pooled = einsum(
-                x, pooling_weights, "time height width, time height width -> time"
+                x,
+                pooling_weights,
+                "batch_size gray_channel time height width, n_channels time height width -> batch_size n_channels time",
             )
         else:
             pooled = einsum(
-                x, pooling_weights, "time height width, height width -> time"
+                x,
+                pooling_weights,
+                "batch_size gray_channel time height width, n_channels height width -> batch_size n_channels time",
             )
+
         if biases is not None:
             pooled = pooled + biases
+
         return pooled

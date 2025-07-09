@@ -93,7 +93,7 @@ class TentNonlinearity:
 
         Parameters
         ----------
-        n_points : 
+        n_points :
             Number of points on the grid.
 
         Returns
@@ -110,7 +110,7 @@ class TentNonlinearity:
 
         Parameters
         ----------
-        x : 
+        x :
             Scalar or array of values (NumPy, JAX, or Torch tensor).
 
         Returns

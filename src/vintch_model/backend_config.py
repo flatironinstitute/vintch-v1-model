@@ -14,15 +14,7 @@ class TorchBackend:
         return x if x.dim() > 0 else x.unsqueeze(0)
 
     def convolve(self, x, kernel):
-        return (
-            self.lib.nn.functional.conv3d(
-                x.unsqueeze(0).unsqueeze(0),
-                kernel.unsqueeze(0).unsqueeze(0),
-                padding="same",
-            )
-            .squeeze(0)
-            .squeeze(0)
-        )
+        return self.lib.nn.functional.conv3d(x, kernel, padding="same")
 
     def check_input_type(self, x):
         assert isinstance(
@@ -50,14 +42,12 @@ class JaxBackend:
 
     def convolve(self, x, kernel):
         conv = self.lax.conv_general_dilated(
-            x[None, None, ...],
-            kernel[None, None, ...],
+            x,
+            kernel,
             window_strides=(1, 1, 1),
             padding="SAME",
         )
-        return conv.squeeze(0).squeeze(
-            0
-        )  # Remove the extra dimensions (batch and channel)
+        return conv
 
     def check_input_type(self, x):
         assert isinstance(
