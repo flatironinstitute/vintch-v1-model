@@ -12,11 +12,8 @@ class TentNonlinearity:
     ----------
     n_basis_funcs :
         Number of basis functions to use. Must be a positive integer.
-    soft :
-        Defines whether to use soft or hard tent nonlinearity.
-        If True, enables soft nonlinearity.
     backend_class :
-        Computational backend to use.
+        Computational backend to use. Must be an instance of BackendBase.
     """
 
     def __init__(self, backend_class: BackendBase, n_basis_funcs: int = 25):
@@ -44,18 +41,7 @@ class TentNonlinearity:
         return self.forward(*args, **kwds)
 
     def compute_basis(self, x):
-        """
-        Compute tent basis features for input `x`.
-
-        Parameters
-        ----------
-        x :
-            Scalar or array of values.
-
-        Returns
-        -------
-        Basis activations of shape (n_samples, n_basis_funcs).
-        """
+        """Compute tent basis features for input x."""
 
         flat_x = x.flatten()
         x_min, x_max = self.backend.lib.min(flat_x), self.backend.lib.max(flat_x)

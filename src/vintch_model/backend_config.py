@@ -191,7 +191,7 @@ def get_backend(backend_name: str):
     Returns
     -------
     Backend instance
-        An instance of JaxBackend or TorchBackend.
+        An instance of the specified backend class.
     """
     if backend_name == "jax":
         return JaxBackend()

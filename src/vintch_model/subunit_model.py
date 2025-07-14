@@ -12,9 +12,8 @@ class SubunitModel:
     ----------
     subunit_kernel :
         Tuple specifying the size of the subunit kernel filters.
-    n_dim :
-        Number of dimension of the input. This is also the dimension
-        of the pooling weights.
+    pooling_shape :
+        Tuple specifying the shape of the pooling weights.
     n_basis_funcs :
         Number of basis functions for the nonlinearity.
     backend :
@@ -22,9 +21,7 @@ class SubunitModel:
     n_channels :
         Number of channels in the model.
     is_channel_excitatory :
-        List indicating whether each channel is excitatory.
-    pooling_in_time :
-        Whether to perform weight pooling also in time.
+        List indicating whether each channel is excitatory. Must match the number of channels.
     """
 
     def __init__(
@@ -119,6 +116,16 @@ class SubunitModel:
     def forward(self, x):
         """
         Forward pass through the whole model.
+
+        Parameters
+        ----------
+        x :
+            Input tensor with shape [batch, channels, time, height, width].
+
+        Returns
+        -------
+        out :
+            Output tensor with shape [batch, time].
         """
         self._backend.check_input_type(x)
         # ensure the input is 5D and the second dimension is 1 (grayscale)
@@ -144,7 +151,7 @@ class SubunitModel:
 
         Returns
         -------
-        output :
+        generator_signal :
             Generator signal with shape [batch, time].
         """
         # [batch, channels, time, height, width]
@@ -160,9 +167,39 @@ class SubunitModel:
         return generator_signal
 
     def convolve(self, x, kernel):
+        """
+        Perform convolution operation.
+
+        Parameters
+        ----------
+        x :
+            Input tensor with shape [batch, channels, time, height, width].
+        kernel :
+            Kernel tensor with shape matching the subunit kernel.
+
+        Returns
+        -------
+        convolved :
+            Convolved tensor with shape [batch, channels, time, height, width].
+        """
         return self._backend.convolve(x, kernel)
 
     def apply_nonlinearities(self, x, nonlinearities):
+        """
+        Apply channel-specific nonlinearities.
+
+        Parameters
+        ----------
+        x :
+            Input tensor with shape [batch, channels, time, height, width].
+        nonlinearities :
+            List of nonlinearity objects, one for each channel.
+
+        Returns
+        -------
+        transformed :
+            Transformed tensor with shape [batch, channels, time, height, width].
+        """
         transformed = [
             nonlinearity(x[:, c]) for c, nonlinearity in enumerate(nonlinearities)
         ]
@@ -173,6 +210,23 @@ class SubunitModel:
         return stacked_transformed
 
     def weighted_pooling(self, x, pooling_weights, biases):
+        """
+        Perform weighted pooling operation.
+
+        Parameters
+        ----------
+        x :
+            Input tensor with shape [batch, channels, time, height, width].
+        pooling_weights :
+            Pooling weights tensor with shape matching the pooling dimensions.
+        biases :
+            Bias tensor with shape [n_channels, 1].
+
+        Returns
+        -------
+        pooled :
+            Pooled tensor with shape [batch, time].
+        """
         pooled = einops.einsum(
             x,
             pooling_weights,
