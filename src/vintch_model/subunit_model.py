@@ -150,7 +150,7 @@ class SubunitModel:
         # [batch, channels, time, height, width]
         convolved = self.convolve(x, self.kernels)
         # [batch, channels, time, height, width]
-        activated = self.nonlinearity_pass(convolved, self.nonlinearities_chan)
+        activated = self.apply_nonlinearities(convolved, self.nonlinearities_chan)
         # [batch, channels, time]
         pooled = self.weighted_pooling(
             activated, self.pooling_weights, biases=self.pooling_biases
@@ -162,7 +162,7 @@ class SubunitModel:
     def convolve(self, x, kernel):
         return self._backend.convolve(x, kernel)
 
-    def nonlinearity_pass(self, x, nonlinearities):
+    def apply_nonlinearities(self, x, nonlinearities):
         transformed = [
             nonlinearity(x[:, c]) for c, nonlinearity in enumerate(nonlinearities)
         ]
