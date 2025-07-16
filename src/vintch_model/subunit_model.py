@@ -1,10 +1,12 @@
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar, Generic
 from .backend_config import get_backend
 from .nonlinearity import TentNonlinearity
 import einops
 
+Tensor = TypeVar("Tensor")
 
-class SubunitModel:
+
+class SubunitModel(Generic[Tensor]):
     """
     Implementation of the Vintch model.
 
@@ -37,10 +39,10 @@ class SubunitModel:
             len(is_channel_excitatory) == n_channels
         ), "Length of is_channel_excitatory must match n_channels"
         self.subunit_kernel = subunit_kernel
-        self.pooling_shape = pooling_shape
         self.n_channels = n_channels
         self._backend = get_backend(backend)
         self._kernels = self._backend.randn((n_channels, 1, *subunit_kernel))
+        self.n_basis_funcs = n_basis_funcs
 
         if len(pooling_shape) == len(subunit_kernel):
             self._pooling_weights = self._backend.randn((n_channels, *pooling_shape))
@@ -50,17 +52,23 @@ class SubunitModel:
             self._pooling_dims = "out_channels height width"
         else:
             raise ValueError(
-                "Invalid pooling_size length. Must match subunit_kernel length or be one less."
+                "Invalid pooling_shape length. Must match subunit_kernel length or be one less."
             )
 
         self._pooling_biases = self._backend.randn((n_channels, 1))
         self.nonlinearities_chan = [
-            TentNonlinearity(backend_class=self._backend, n_basis_funcs=n_basis_funcs)
-            for _ in range(n_channels)
+            TentNonlinearity(
+                backend_instance=self._backend,
+                n_basis_funcs=n_basis_funcs,
+                nonlinearity_type="relu" if is_channel_excitatory[c] else "quadratic",
+            )
+            for c in range(n_channels)
         ]
         self.nonlinearity_out = TentNonlinearity(
-            backend_class=self._backend, n_basis_funcs=n_basis_funcs
-        )  # should check the number of basis functions
+            backend_instance=self._backend,
+            n_basis_funcs=n_basis_funcs,
+            nonlinearity_type="relu",
+        )
 
     def __call__(self, *args, **kwds):
         return self.forward(*args, **kwds)
@@ -113,7 +121,7 @@ class SubunitModel:
         """Setter for backend class."""
         self._backend = get_backend(backend_name)
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
         """
         Forward pass through the whole model.
 
@@ -128,16 +136,15 @@ class SubunitModel:
             Output tensor with shape [batch, time].
         """
         self._backend.check_input_type(x)
-        # ensure the input is 5D and the second dimension is 1 (grayscale)
-        if x.shape[1] != 1:
-            raise ValueError(
-                f"Dimension 1 of input must be 1 (grayscale), got {x.shape[1]} instead."
-            )
+        assert (
+            x.shape[1] == 1
+        ), f"Dimension 1 of input must be 1 (grayscale), got {x.shape[1]} instead."
+
         generator_signal = self.generator_signal_forward(x)  # [batch, time]
         out = self.nonlinearity_out.forward(generator_signal)  # [batch, time]
         return out
 
-    def generator_signal_forward(self, x):
+    def generator_signal_forward(self, x: Tensor) -> Tensor:
         """
         Compute the generator signal.
 
@@ -159,14 +166,12 @@ class SubunitModel:
         # [batch, channels, time, height, width]
         activated = self.apply_nonlinearities(convolved, self.nonlinearities_chan)
         # [batch, channels, time]
-        pooled = self.weighted_pooling(
-            activated, self.pooling_weights, biases=self.pooling_biases
-        )
+        pooled = self.weighted_pooling(activated, self.pooling_weights)
         # [batch, time]
         generator_signal = pooled.sum(axis=1)
         return generator_signal
 
-    def convolve(self, x, kernel):
+    def convolve(self, x: Tensor, kernel: Tensor) -> Tensor:
         """
         Perform convolution operation.
 
@@ -184,7 +189,7 @@ class SubunitModel:
         """
         return self._backend.convolve(x, kernel)
 
-    def apply_nonlinearities(self, x, nonlinearities):
+    def apply_nonlinearities(self, x: Tensor, nonlinearities: list) -> Tensor:
         """
         Apply channel-specific nonlinearities.
 
@@ -209,7 +214,7 @@ class SubunitModel:
         )
         return stacked_transformed
 
-    def weighted_pooling(self, x, pooling_weights, biases):
+    def weighted_pooling(self, x: Tensor, pooling_weights: Tensor) -> Tensor:
         """
         Perform weighted pooling operation.
 
@@ -219,8 +224,6 @@ class SubunitModel:
             Input tensor with shape [batch, channels, time, height, width].
         pooling_weights :
             Pooling weights tensor with shape matching the pooling dimensions.
-        biases :
-            Bias tensor with shape [n_channels, 1].
 
         Returns
         -------
@@ -233,5 +236,4 @@ class SubunitModel:
             f"batch_size in_channels time height width, {self._pooling_dims} -> batch_size out_channels time",
         )
 
-        pooled = pooled + biases
         return pooled

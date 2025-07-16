@@ -54,11 +54,25 @@ class TorchBackend(BackendBase):
 
     def get_array(self, arr: np.ndarray, dtype=None):
         """
-        Convert a NumPy array to the backend-specific array type.
+        Convert a NumPy array to torch tensor with optional dtype.
         """
         if dtype is not None:
             return self.lib.tensor(arr, dtype=dtype)
         return self.lib.tensor(arr)
+
+    def set_dtype(self, arr, dtype):
+        """
+        Set the data type of the array.
+        """
+        return arr.to(dtype)
+
+    def minmax_norm(self, x):
+        """
+        Normalize the input tensor to the range [-1, 1].
+        """
+        x_min = x.min()
+        x_max = x.max()
+        return 2 * (x - x_min) / (x_max - x_min + 1e-6) - 1
 
 
 class JaxBackend(BackendBase):
@@ -67,10 +81,10 @@ class JaxBackend(BackendBase):
         from jax import random, lax
 
         self.lib = jnp
-        self.random = random
-        self.lax = lax
+        self._random = random
+        self._lax = lax
         self.name = "jax"
-        self.key = random.PRNGKey(0)
+        self._key = random.PRNGKey(0)
 
     def randn(self, shape, key: int = None):
         """
@@ -78,16 +92,16 @@ class JaxBackend(BackendBase):
         """
         if key is None:
             # split to get a new key and update internal state
-            self.key, subkey = self.random.split(self.key)
+            self._key, subkey = self._random.split(self._key)
         else:
-            subkey = self.random.PRNGKey(key)
-        return self.random.normal(subkey, shape)
+            subkey = self._random.PRNGKey(key)
+        return self._random.normal(subkey, shape)
 
     def convolve(self, x, kernel, padding="SAME"):
         """
         Perform convolution operation.
         """
-        conv = self.lax.conv_general_dilated(
+        conv = self._lax.conv_general_dilated(
             x,
             kernel,
             window_strides=(1, 1, 1),
@@ -117,11 +131,25 @@ class JaxBackend(BackendBase):
 
     def get_array(self, arr: np.ndarray, dtype=None):
         """
-        Convert a NumPy array to the backend-specific array type.
+        Convert a NumPy array to jax array with optional dtype.
         """
         if dtype is not None:
             return self.lib.asarray(arr, dtype=dtype)
         return self.lib.asarray(arr)
+
+    def set_dtype(self, arr, dtype):
+        """
+        Set the data type of the array.
+        """
+        return arr.astype(dtype)
+
+    def minmax_norm(self, x):
+        """
+        Normalize the input tensor to the range [-1, 1].
+        """
+        x_min = x.min()
+        x_max = x.max()
+        return 2 * (x - x_min) / (x_max - x_min + 1e-6) - 1
 
 
 class NumpyBackend(BackendBase):
@@ -172,11 +200,25 @@ class NumpyBackend(BackendBase):
 
     def get_array(self, arr: np.ndarray, dtype=None):
         """
-        Convert a NumPy array to the backend-specific array type.
+        Convert a NumPy array to numpy array with optional dtype.
         """
         if dtype is not None:
             return arr.astype(dtype)
         return arr
+
+    def set_dtype(self, arr, dtype):
+        """
+        Set the data type of the array.
+        """
+        return arr.astype(dtype)
+
+    def minmax_norm(self, x):
+        """
+        Normalize the input tensor to the range [-1, 1].
+        """
+        x_min = x.min()
+        x_max = x.max()
+        return 2 * (x - x_min) / (x_max - x_min + 1e-6) - 1
 
 
 def get_backend(backend_name: str):
