@@ -70,6 +70,8 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+docs/build/
+docs/source/api/
 
 # PyBuilder
 .pybuilder/
@@ -192,3 +194,6 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+*ipynb
+*auctex-auto

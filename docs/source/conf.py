@@ -54,3 +54,13 @@ myst_enable_extensions = [
 
 html_theme = 'pydata_sphinx_theme'
 html_static_path = ['_static']
+
+# SPHINXCONTRIB-BIBTEX
+bibtex_bibfiles = ["references.bib"]
+bibtex_reference_style = "author_year"
+
+# SPHINX COPYBUTTON
+copybutton_exclude = ".linenos, .gp"
+
+# APIDOC
+apidoc_module_dir = "../../src/vintch_model/"
