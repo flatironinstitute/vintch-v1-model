@@ -25,7 +25,10 @@ class BackendBase:
         pass
 
     def get_array(self, arr: np.ndarray, dtype=None):
-        """
-        Convert a NumPy array to the backend-specific array type.
-        """
+        pass
+
+    def set_dtype(self, arr, dtype):
+        pass
+
+    def minmax_norm(self, x):
         pass
