@@ -26,6 +26,19 @@ dependencies = [
 torch = ["torch>=1.8"]
 jax = ["jax>=0.4.28"]
 
+docs = [
+     'sphinx',
+     "pydata-sphinx-theme",
+     'numpydoc',
+     'sphinxcontrib-apidoc',
+     'sphinx-autodoc-typehints',
+     'sphinx-copybutton',
+     "myst-parser",
+     "sphinxcontrib-bibtex",
+     "myst-nb",
+     "jupytext",
+]
+
 [project.urls]
 Repository = "https://github.com/flatironinstitute/vintch-v1-model"
 
