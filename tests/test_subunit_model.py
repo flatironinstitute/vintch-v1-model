@@ -41,7 +41,7 @@ def test_subunit_model_forward_pass(
         model.pooling_weights = pooling_weights_backend
         model.pooling_biases = pooling_biases_backend
 
-        for i, nonlinearity in enumerate(model.nonlinearities_chan):
+        for i, nonlinearity in enumerate(model._nonlinearities_chan):
             nonlinearity.weights = backend.get_array(arr=nonlinearities_weights[i])
         model.nonlinearity_out.weights = backend.get_array(
             arr=nonlinearities_weights[-1]
