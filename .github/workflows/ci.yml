@@ -1,0 +1,48 @@
+name: build
+on:
+  workflow_dispatch:
+  schedule:
+  - cron: 0 0 * * 0     # weekly
+  pull_request:
+    branches:
+    - main
+
+concurrency:
+  # from https://stackoverflow.com/a/72408109/4659293
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+      fail-fast: false
+    name: Run pytest scripts
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Python 3
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+        cache: pip
+    - name: Install dependencies
+      run: |
+        # using the --upgrade and --upgrade-strategy eager flags ensures that
+        # pip will always install the latest allowed version of all
+        # dependencies, to make sure the cache doesn't go stale
+        pip install --upgrade --upgrade-strategy eager .[dev,jax,torch]
+    - name: Run tests with pytest
+      run: pytest
+
+  check:
+    if: always()
+    needs:
+    - tests
+    runs-on: ubuntu-latest
+    steps:
+    - name: Decide whether all tests and notebooks succeeded
+      uses: re-actors/alls-green@afee1c1eac2a506084c274e9c02c8e0687b48d9e # v1.2.2
+      with:
+        jobs: ${{ toJSON(needs) }}
