@@ -28,8 +28,19 @@ class TorchBackend(BackendBase):
     def convolve(self, x, kernel, padding="same"):
         """
         Perform convolution operation.
+
+        Parameters
+        ----------
+        x :
+            Input tensor of shape [batch, 1, time, height, width].
+        kernel :
+            Kernel tensor of shape [n_kernels, 1, kT, kH, kW].
         """
-        return self.lib.nn.functional.conv3d(x, kernel, padding=padding)
+        x_repeated = x.repeat(1, kernel.shape[0], 1, 1, 1)
+        conv = self.lib.nn.functional.conv3d(
+            x_repeated, kernel, padding=padding, groups=kernel.shape[0]
+        )
+        return conv
 
     def check_input_type(self, x):
         """
@@ -100,12 +111,22 @@ class JaxBackend(BackendBase):
     def convolve(self, x, kernel, padding="SAME"):
         """
         Perform convolution operation.
+
+        Parameters
+        ----------
+        x :
+            Input tensor of shape [batch, 1, time, height, width].
+        kernel :
+            Kernel tensor of shape [n_kernels, 1, kT, kH, kW].
         """
+        x_repeated = self.lib.repeat(x, kernel.shape[0], axis=1)
         conv = self._lax.conv_general_dilated(
-            x,
-            kernel,
+            lhs=x_repeated,
+            rhs=kernel,
             window_strides=(1, 1, 1),
             padding=padding,
+            dimension_numbers=("NCTHW", "OITHW", "NCTHW"),
+            feature_group_count=kernel.shape[0],
         )
         return conv
 

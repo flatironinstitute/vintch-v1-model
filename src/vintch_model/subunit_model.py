@@ -46,17 +46,17 @@ class SubunitModel(Generic[Tensor]):
 
         if len(pooling_shape) == len(subunit_kernel):
             self._pooling_weights = self._backend.randn((n_channels, *pooling_shape))
-            self._pooling_dims = "out_channels time height width"
+            self._pooling_dims = "n_channels time height width"
         elif len(pooling_shape) == len(subunit_kernel) - 1:
             self._pooling_weights = self._backend.randn((n_channels, *pooling_shape))
-            self._pooling_dims = "out_channels height width"
+            self._pooling_dims = "n_channels height width"
         else:
             raise ValueError(
                 "Invalid pooling_shape length. Must match subunit_kernel length or be one less."
             )
 
         self._pooling_biases = self._backend.randn((n_channels, 1))
-        self.nonlinearities_chan = [
+        self._nonlinearities_chan = [
             TentNonlinearity(
                 backend_instance=self._backend,
                 n_basis_funcs=n_basis_funcs,
@@ -71,7 +71,7 @@ class SubunitModel(Generic[Tensor]):
         )
 
     def __call__(self, *args, **kwds):
-        return self.forward(*args, **kwds)
+        return self._predict(*args, **kwds)
 
     @property
     def kernels(self):
@@ -121,119 +121,103 @@ class SubunitModel(Generic[Tensor]):
         """Setter for backend class."""
         self._backend = get_backend(backend_name)
 
-    def forward(self, x: Tensor) -> Tensor:
+    def _predict(self, x: Tensor) -> Tensor:
         """
         Forward pass through the whole model.
 
         Parameters
         ----------
         x :
-            Input tensor with shape [batch, channels, time, height, width].
+            Input tensor with shape [batch_size, 1, time, height, width].
 
         Returns
         -------
         out :
-            Output tensor with shape [batch, time].
+            Output tensor with shape [batch_size, time].
         """
         self._backend.check_input_type(x)
         assert (
             x.shape[1] == 1
         ), f"Dimension 1 of input must be 1 (grayscale), got {x.shape[1]} instead."
 
-        generator_signal = self.generator_signal_forward(x)  # [batch, time]
-        out = self.nonlinearity_out.forward(generator_signal)  # [batch, time]
+        # [batch_size, n_channels, time, height, width]
+        sub_convolved = self._convolve(x, self.kernels)
+        # [batch_size, n_channels, time, height, width]
+        sub_activated = self._apply_nonlinearities(
+            sub_convolved, self._nonlinearities_chan
+        )
+        # [batch_size, time]
+        generator_signal = self._weighted_pooling(sub_activated, self.pooling_weights)
+        # [batch_size, time]
+        out = self.nonlinearity_out.forward(generator_signal)
         return out
 
-    def generator_signal_forward(self, x: Tensor) -> Tensor:
-        """
-        Compute the generator signal.
-
-        The generator signal is sent through the final nonlinearity to produce
-        the cell's firing rate.
-
-        Parameters
-        ----------
-        x :
-            Input tensor with shape [batch, channels, time, height, width].
-
-        Returns
-        -------
-        generator_signal :
-            Generator signal with shape [batch, time].
-        """
-        # [batch, channels, time, height, width]
-        convolved = self.convolve(x, self.kernels)
-        # [batch, channels, time, height, width]
-        activated = self.apply_nonlinearities(convolved, self.nonlinearities_chan)
-        # [batch, channels, time]
-        pooled = self.weighted_pooling(activated, self.pooling_weights)
-        # [batch, time]
-        generator_signal = pooled.sum(axis=1)
-        return generator_signal
-
-    def convolve(self, x: Tensor, kernel: Tensor) -> Tensor:
+    def _convolve(self, x: Tensor, kernel: Tensor) -> Tensor:
         """
         Perform convolution operation.
 
         Parameters
         ----------
         x :
-            Input tensor with shape [batch, channels, time, height, width].
+            Input tensor with shape [batch_size, 1, time, height, width].
         kernel :
-            Kernel tensor with shape matching the subunit kernel.
+            Kernel tensor with shape matching the subunit kernel. [n_kernels, 1, kT, kH, kW].
 
         Returns
         -------
         convolved :
-            Convolved tensor with shape [batch, channels, time, height, width].
+            Convolved tensor with shape [batch_size, n_channels, time, height, width].
         """
         return self._backend.convolve(x, kernel)
 
-    def apply_nonlinearities(self, x: Tensor, nonlinearities: list) -> Tensor:
+    def _apply_nonlinearities(self, x: Tensor, nonlinearities: list) -> Tensor:
         """
         Apply channel-specific nonlinearities.
 
         Parameters
         ----------
         x :
-            Input tensor with shape [batch, channels, time, height, width].
+            Input tensor with shape [batch_size, n_channels, time, height, width].
         nonlinearities :
             List of nonlinearity objects, one for each channel.
 
         Returns
         -------
         transformed :
-            Transformed tensor with shape [batch, channels, time, height, width].
+            Transformed tensor with shape [batch_size, n_channels, time, height, width].
         """
         transformed = [
             nonlinearity(x[:, c]) for c, nonlinearity in enumerate(nonlinearities)
         ]
 
         stacked_transformed, _ = einops.pack(
-            transformed, pattern="batch * time height width"
+            transformed, pattern="batch_size * time height width"
         )
         return stacked_transformed
 
-    def weighted_pooling(self, x: Tensor, pooling_weights: Tensor) -> Tensor:
+    def _weighted_pooling(self, x: Tensor, pooling_weights: Tensor) -> Tensor:
         """
         Perform weighted pooling operation.
+
+        This operation computes a weighted sum of the input tensor using the
+        provided pooling weights and sum over the spatial dimensions.
 
         Parameters
         ----------
         x :
-            Input tensor with shape [batch, channels, time, height, width].
+            Input tensor with shape [batch_size, n_channels, time, height, width].
         pooling_weights :
             Pooling weights tensor with shape matching the pooling dimensions.
 
         Returns
         -------
         pooled :
-            Pooled tensor with shape [batch, time].
+            Pooled tensor with shape [batch_size, time].
         """
         pooled = einops.einsum(
             x,
             pooling_weights,
-            f"batch_size in_channels time height width, {self._pooling_dims} -> batch_size out_channels time",
+            f"batch_size n_channels time height width, {self._pooling_dims} -> batch_size time",
         )
 
         return pooled
