@@ -29,6 +29,20 @@ class TestBackend:
         x = backend.randn(input_shape)
         backend.check_input_type(x)
 
+        # Manual check to ensure the type is as expected
+        if backend_cls == NumpyBackend:
+            assert isinstance(
+                x, np.ndarray
+            ), f"{backend_cls.__name__}: Expected np.ndarray, but got {type(x)}"
+        elif backend_cls == TorchBackend:
+            assert isinstance(
+                x, backend.lib.Tensor
+            ), f"{backend_cls.__name__}: Expected backend.lib.Tensor, but got {type(x)}"
+        elif backend_cls == JaxBackend:
+            assert isinstance(
+                x, backend.lib.ndarray
+            ), f"{backend_cls.__name__}: Expected backend.lib.ndarray, but got {type(x)}"
+
     def test_setitem(self, backend_cls):
         backend = backend_cls()
 
@@ -53,8 +67,6 @@ class TestBackend:
         assert rand.shape == shape, "Output shape mismatch for randn"
 
     def test_convolve(self, backend_cls):
-        if backend_cls == NumpyBackend:
-            pytest.skip("NumpyBackend does not support convolution")
         backend = backend_cls()
 
         x = backend.lib.ones((1, 1, 5, 5, 5))
@@ -62,9 +74,28 @@ class TestBackend:
         out = backend.convolve(x, kernel, padding="same")
         assert out.shape == x.shape, "Output shape mismatch for convolve"
 
+    @pytest.mark.parametrize(
+        "shape",
+        [
+            (2, 3),
+            (1, 1, 10, 10, 10),
+        ],
+    )
+    def test_reshape(self, backend_cls, shape):
+        backend = backend_cls()
+        array = backend.randn(shape)
+        reshaped = array.flatten().reshape(array.shape)
+        arrays_equal = np.array_equal(
+            backend.to_numpy(array), backend.to_numpy(reshaped)
+        )
+
+        assert (
+            arrays_equal
+        ), f"{backend_cls.__name__}: Reshape failed or values changed!"
+
 
 def test_convolve_consistency_across_backends():
-    backends = [TorchBackend(), JaxBackend()]
+    backends = [TorchBackend(), JaxBackend(), NumpyBackend()]
     x_shapes = (1, 1, 25, 25, 25)
     kernel_shapes = (2, 1, 3, 3, 3)
 
@@ -73,11 +104,11 @@ def test_convolve_consistency_across_backends():
 
     outputs = []
     for backend in backends:
-        x = backend.get_array(x)
-        kernel = backend.get_array(kernel)
+        x = backend.convert_array(x)
+        kernel = backend.convert_array(kernel)
         out = backend.convolve(x, kernel, padding="same")
         outputs.append(backend.to_numpy(out))
 
     assert np.allclose(
         outputs[0], outputs[1]
-    ), "Convolution outputs differ across backends"
+    ), f"Convolution outputs differ across backends. First output: {outputs[0][0][0]}, Second output: {outputs[1][0][0]}, Third output: {outputs[2][0][0]}"

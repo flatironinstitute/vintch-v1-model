@@ -44,30 +44,29 @@ class SubunitModel(Generic[Tensor]):
         self._kernels = self._backend.randn((n_channels, 1, *subunit_kernel))
         self.n_basis_funcs = n_basis_funcs
 
+        self._pooling_weights = self._backend.randn((n_channels, *pooling_shape))
         if len(pooling_shape) == len(subunit_kernel):
-            self._pooling_weights = self._backend.randn((n_channels, *pooling_shape))
             self._pooling_dims = "n_channels time height width"
         elif len(pooling_shape) == len(subunit_kernel) - 1:
-            self._pooling_weights = self._backend.randn((n_channels, *pooling_shape))
             self._pooling_dims = "n_channels height width"
         else:
             raise ValueError(
                 "Invalid pooling_shape length. Must match subunit_kernel length or be one less."
             )
 
-        self._pooling_biases = self._backend.randn((n_channels, 1))
+        self._pooling_biases = self._backend.randn((1,))
         self._nonlinearities_chan = [
             TentNonlinearity(
                 backend_instance=self._backend,
                 n_basis_funcs=n_basis_funcs,
-                nonlinearity_type="relu" if is_channel_excitatory[c] else "quadratic",
+                nonlinearity_mode="relu" if is_channel_excitatory[c] else "quadratic",
             )
             for c in range(n_channels)
         ]
         self.nonlinearity_out = TentNonlinearity(
             backend_instance=self._backend,
             n_basis_funcs=n_basis_funcs,
-            nonlinearity_type="relu",
+            nonlinearity_mode="relu",
         )
 
     def __call__(self, *args, **kwds):
@@ -111,15 +110,6 @@ class SubunitModel(Generic[Tensor]):
         ), f"Expected pooling biases shape to be {self._pooling_biases.shape}, got {biases.shape} instead."
         self._backend.check_input_type(biases)
         self._pooling_biases = biases
-
-    @property
-    def backend(self):
-        return self._backend
-
-    @backend.setter
-    def backend(self, backend_name: Literal["jax", "torch", "numpy"]):
-        """Setter for backend class."""
-        self._backend = get_backend(backend_name)
 
     def _predict(self, x: Tensor) -> Tensor:
         """
@@ -220,4 +210,5 @@ class SubunitModel(Generic[Tensor]):
             f"batch_size n_channels time height width, {self._pooling_dims} -> batch_size time",
         )
 
+        pooled = pooled + self._pooling_biases
         return pooled
