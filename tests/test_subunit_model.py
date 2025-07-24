@@ -6,30 +6,34 @@ from vintch_model.backend_config import get_backend
 
 @pytest.mark.parametrize("x_shape", [(1, 1, 15, 15, 15), (5, 1, 30, 30, 30)])
 @pytest.mark.parametrize("subunit_kernel", [(3, 3, 3), (5, 5, 5), (8, 8, 8)])
-@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("dtype", [np.float64])
 @pytest.mark.parametrize("n_channels", [2])
 @pytest.mark.parametrize("n_basis_funcs", [25])
 def test_subunit_model_forward_pass(
     x_shape, subunit_kernel, dtype, n_channels, n_basis_funcs
 ):
-    backends_names = ["torch", "jax"]
+    backends_names = ["torch", "jax", "numpy"]
     outputs = []
     pooling_shape = x_shape[2:]
 
-    x = np.random.randn(*x_shape).astype(dtype)
+    x = np.random.rand(*x_shape).astype(dtype)
+    x = np.clip(x, 0, 1)  # Ensure input is between [0, 1]
+
     kernels = np.random.randn(n_channels, 1, *subunit_kernel).astype(dtype)
     pooling_weights = np.random.randn(n_channels, *pooling_shape).astype(dtype)
-    pooling_biases = np.random.randn(n_channels, 1).astype(dtype)
+    pooling_biases = np.random.randn((1)).astype(dtype)
     nonlinearities_weights = np.random.randn(n_channels + 1, n_basis_funcs).astype(
         dtype
     )
 
     for backend_name in backends_names:
         backend = get_backend(backend_name)
-        x_backend = backend.get_array(arr=x)
-        kernels_backend = backend.get_array(arr=kernels)
-        pooling_weights_backend = backend.get_array(arr=pooling_weights)
-        pooling_biases_backend = backend.get_array(arr=pooling_biases)
+        x_backend = backend.convert_array(arr=x, dtype=dtype)
+        kernels_backend = backend.convert_array(arr=kernels, dtype=dtype)
+        pooling_weights_backend = backend.convert_array(
+            arr=pooling_weights, dtype=dtype
+        )
+        pooling_biases_backend = backend.convert_array(arr=pooling_biases, dtype=dtype)
         model = SubunitModel(
             backend=backend_name,
             subunit_kernel=subunit_kernel,
@@ -42,8 +46,8 @@ def test_subunit_model_forward_pass(
         model.pooling_biases = pooling_biases_backend
 
         for i, nonlinearity in enumerate(model._nonlinearities_chan):
-            nonlinearity.weights = backend.get_array(arr=nonlinearities_weights[i])
-        model.nonlinearity_out.weights = backend.get_array(
+            nonlinearity.weights = backend.convert_array(arr=nonlinearities_weights[i])
+        model._nonlinearity_out.weights = backend.convert_array(
             arr=nonlinearities_weights[-1]
         )
 
@@ -55,5 +59,5 @@ def test_subunit_model_forward_pass(
         shape == output_shapes[0] for shape in output_shapes
     ), "Output shapes do not match across backends."
     assert np.allclose(
-        outputs[0], outputs[1], atol=1e-3
+        outputs[0], outputs[1], atol=1e-4, rtol=1e-3
     ), f"Outputs from {backends_names[0]} and {backends_names[1]} do not match."

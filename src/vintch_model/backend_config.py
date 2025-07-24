@@ -1,5 +1,7 @@
 import numpy as np
+from scipy.signal import correlate
 from .base_backend import BackendBase
+from typing import Literal
 
 
 class TorchBackend(BackendBase):
@@ -25,7 +27,7 @@ class TorchBackend(BackendBase):
             self.lib.manual_seed(key)
         return self.lib.randn(shape)
 
-    def convolve(self, x, kernel, padding="same"):
+    def convolve(self, x, kernel, padding: Literal["same", "valid"] = "same"):
         """
         Perform convolution operation.
 
@@ -35,7 +37,11 @@ class TorchBackend(BackendBase):
             Input tensor of shape [batch, 1, time, height, width].
         kernel :
             Kernel tensor of shape [n_kernels, 1, kT, kH, kW].
+        padding :
+            Padding mode.
         """
+        if padding not in ["same", "valid"]:
+            raise ValueError(f"Unsupported padding: {padding}")
         x_repeated = x.repeat(1, kernel.shape[0], 1, 1, 1)
         conv = self.lib.nn.functional.conv3d(
             x_repeated, kernel, padding=padding, groups=kernel.shape[0]
@@ -63,18 +69,21 @@ class TorchBackend(BackendBase):
         arr[index] = value
         return arr
 
-    def get_array(self, arr: np.ndarray, dtype=None):
+    def convert_array(self, arr: np.ndarray, dtype=None):
         """
         Convert a NumPy array to torch tensor with optional dtype.
         """
+        out = self.lib.tensor(arr)
         if dtype is not None:
-            return self.lib.tensor(arr, dtype=dtype)
-        return self.lib.tensor(arr)
+            out = self.set_dtype(out, dtype)
+        return out
 
     def set_dtype(self, arr, dtype):
         """
         Set the data type of the array.
         """
+        if isinstance(dtype, (np.dtype, type)):
+            dtype = self.lib.from_numpy(np.array([], dtype=dtype)).dtype
         return arr.to(dtype)
 
     def minmax_norm(self, x):
@@ -83,13 +92,21 @@ class TorchBackend(BackendBase):
         """
         x_min = x.min()
         x_max = x.max()
-        return 2 * (x - x_min) / (x_max - x_min + 1e-6) - 1
+        return 2 * (x - x_min) / (x_max - x_min) - 1
+
+    def l1_norm(self, x):
+        """
+        Compute the L1 norm of a tensor.
+        """
+        return self.lib.sum(self.lib.abs(x))
 
 
 class JaxBackend(BackendBase):
     def __init__(self):
         import jax.numpy as jnp
-        from jax import random, lax
+        from jax import random, lax, config
+
+        config.update("jax_enable_x64", True)
 
         self.lib = jnp
         self._random = random
@@ -108,7 +125,7 @@ class JaxBackend(BackendBase):
             subkey = self._random.PRNGKey(key)
         return self._random.normal(subkey, shape)
 
-    def convolve(self, x, kernel, padding="SAME"):
+    def convolve(self, x, kernel, padding: Literal["same", "valid"] = "same"):
         """
         Perform convolution operation.
 
@@ -118,7 +135,12 @@ class JaxBackend(BackendBase):
             Input tensor of shape [batch, 1, time, height, width].
         kernel :
             Kernel tensor of shape [n_kernels, 1, kT, kH, kW].
+        padding :
+            Padding type.
         """
+        if padding not in ["same", "valid"]:
+            raise ValueError(f"Unsupported padding: {padding}")
+        padding = padding.upper()
         x_repeated = self.lib.repeat(x, kernel.shape[0], axis=1)
         conv = self._lax.conv_general_dilated(
             lhs=x_repeated,
@@ -150,13 +172,14 @@ class JaxBackend(BackendBase):
         """
         return arr.at[index].set(value)
 
-    def get_array(self, arr: np.ndarray, dtype=None):
+    def convert_array(self, arr: np.ndarray, dtype=None):
         """
         Convert a NumPy array to jax array with optional dtype.
         """
+        out = self.lib.asarray(arr)
         if dtype is not None:
-            return self.lib.asarray(arr, dtype=dtype)
-        return self.lib.asarray(arr)
+            out = self.set_dtype(out, dtype)
+        return out
 
     def set_dtype(self, arr, dtype):
         """
@@ -170,7 +193,13 @@ class JaxBackend(BackendBase):
         """
         x_min = x.min()
         x_max = x.max()
-        return 2 * (x - x_min) / (x_max - x_min + 1e-6) - 1
+        return 2 * (x - x_min) / (x_max - x_min) - 1
+
+    def l1_norm(self, x):
+        """
+        Compute the L1 norm of jax array.
+        """
+        return self.lib.sum(self.lib.abs(x))
 
 
 class NumpyBackend(BackendBase):
@@ -184,11 +213,48 @@ class NumpyBackend(BackendBase):
         self.lib = np
         self.name = "numpy"
 
-    def convolve(self, x, kernel, padding="same"):  # MISSING IMPLEMENTATION
+    def convolve(self, x, kernel, padding: Literal["same"] = "same"):
         """
         Perform convolution operation.
+
+        VALID padding has not yet been implemented for this backend.
+
+        Parameters
+        ----------
+        x :
+            Input tensor of shape [batch, 1, time, height, width].
+        kernel :
+            Kernel tensor of shape [n_kernels, 1, kT, kH, kW].
+        padding :
+            Padding type.
         """
-        pass
+        batch_size, _, t, h, w = x.shape
+        n_kernels, _, _, _, _ = kernel.shape
+        x_repeated = np.repeat(x, n_kernels, axis=1)
+        output = np.zeros((batch_size, n_kernels, t, h, w))
+
+        for b in range(batch_size):
+            for k in range(n_kernels):
+                input_vol = x_repeated[b, k]
+                kernel_vol = kernel[k, 0]
+                conv = correlate(input_vol, kernel_vol, mode=padding, method="auto")
+
+                if padding == "same":
+                    # Calculate the slices for each dimension based on the expected and actual shapes
+                    slices = []
+                    original_shape = (t, h, w)
+                    for actual, expected in zip(conv.shape, original_shape):
+                        if actual > expected:
+                            start = (actual - expected) // 2
+                            end = start + expected
+                            slices.append(slice(start, end))
+                        else:
+                            slices.append(slice(0, actual))
+
+                    conv = conv[tuple(slices)]
+
+                output[b, k] = conv
+        return output
 
     def check_input_type(self, x):
         """
@@ -219,7 +285,7 @@ class NumpyBackend(BackendBase):
         arr[index] = value
         return arr
 
-    def get_array(self, arr: np.ndarray, dtype=None):
+    def convert_array(self, arr: np.ndarray, dtype=None):
         """
         Convert a NumPy array to numpy array with optional dtype.
         """
@@ -239,17 +305,23 @@ class NumpyBackend(BackendBase):
         """
         x_min = x.min()
         x_max = x.max()
-        return 2 * (x - x_min) / (x_max - x_min + 1e-6) - 1
+        return 2 * (x - x_min) / (x_max - x_min) - 1
+
+    def l1_norm(self, x):
+        """
+        Compute the L1 norm of a NumPy array.
+        """
+        return self.lib.sum(self.lib.abs(x))
 
 
-def get_backend(backend_name: str):
+def get_backend(backend_name: Literal["jax", "torch", "numpy"]) -> BackendBase:
     """
     Get the backend instance based on the specified package.
 
     Parameters
     ----------
     backend_name :
-        The name of the backend to use ('jax' or 'torch').
+        The name of the backend to use.
 
     Returns
     -------
