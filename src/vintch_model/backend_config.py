@@ -94,6 +94,12 @@ class TorchBackend(BackendBase):
         x_max = x.max()
         return 2 * (x - x_min) / (x_max - x_min) - 1
 
+    def l1_norm(self, x):
+        """
+        Compute the L1 norm of a tensor.
+        """
+        return self.lib.sum(self.lib.abs(x))
+
 
 class JaxBackend(BackendBase):
     def __init__(self):
@@ -188,6 +194,12 @@ class JaxBackend(BackendBase):
         x_min = x.min()
         x_max = x.max()
         return 2 * (x - x_min) / (x_max - x_min) - 1
+
+    def l1_norm(self, x):
+        """
+        Compute the L1 norm of jax array.
+        """
+        return self.lib.sum(self.lib.abs(x))
 
 
 class NumpyBackend(BackendBase):
@@ -294,6 +306,12 @@ class NumpyBackend(BackendBase):
         x_min = x.min()
         x_max = x.max()
         return 2 * (x - x_min) / (x_max - x_min) - 1
+
+    def l1_norm(self, x):
+        """
+        Compute the L1 norm of a NumPy array.
+        """
+        return self.lib.sum(self.lib.abs(x))
 
 
 def get_backend(backend_name: Literal["jax", "torch", "numpy"]) -> BackendBase:

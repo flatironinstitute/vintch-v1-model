@@ -41,10 +41,15 @@ class SubunitModel(Generic[Tensor]):
         self.subunit_kernel = subunit_kernel
         self.n_channels = n_channels
         self._backend = get_backend(backend)
-        self._kernels = self._backend.randn((n_channels, 1, *subunit_kernel))
+
+        random_kernels = self._backend.randn((n_channels, 1, *subunit_kernel))
+        self._kernels = random_kernels / self._backend.l1_norm(random_kernels)
         self.n_basis_funcs = n_basis_funcs
 
-        self._pooling_weights = self._backend.randn((n_channels, *pooling_shape))
+        random_pooling_weights = self._backend.randn((n_channels, *pooling_shape))
+        self._pooling_weights = random_pooling_weights / self._backend.l1_norm(
+            random_pooling_weights
+        )
         if len(pooling_shape) == len(subunit_kernel):
             self._pooling_dims = "n_channels time height width"
         elif len(pooling_shape) == len(subunit_kernel) - 1:
@@ -63,7 +68,7 @@ class SubunitModel(Generic[Tensor]):
             )
             for c in range(n_channels)
         ]
-        self.nonlinearity_out = TentNonlinearity(
+        self._nonlinearity_out = TentNonlinearity(
             backend_instance=self._backend,
             n_basis_funcs=n_basis_funcs,
             nonlinearity_mode="relu",
@@ -83,7 +88,7 @@ class SubunitModel(Generic[Tensor]):
             new_kernels.shape == self._kernels.shape
         ), f"Expected kernel shape to be {self._kernels.shape}, got {new_kernels.shape} instead."
         self._backend.check_input_type(new_kernels)
-        self._kernels = new_kernels
+        self._kernels = new_kernels / self._backend.l1_norm(new_kernels)
 
     @property
     def pooling_weights(self):
@@ -96,7 +101,7 @@ class SubunitModel(Generic[Tensor]):
             weights.shape == self._pooling_weights.shape
         ), f"Expected pooling weights shape to be {self._pooling_weights.shape}, got {weights.shape} instead."
         self._backend.check_input_type(weights)
-        self._pooling_weights = weights
+        self._pooling_weights = weights / self._backend.l1_norm(weights)
 
     @property
     def pooling_biases(self):
@@ -130,8 +135,16 @@ class SubunitModel(Generic[Tensor]):
             x.shape[1] == 1
         ), f"Dimension 1 of input must be 1 (grayscale), got {x.shape[1]} instead."
 
+        x = self._backend.set_dtype(x, self._kernels.dtype)
+
+        # check if the input range is between 0 and 1
+        x_min, x_max = x.min(), x.max()
+        assert (0 <= x_min <= 1) and (
+            0 <= x_max <= 1
+        ), f"Input values must be in the range [0, 1], got min: {x_min}, max: {x_max} instead."
+
         # [batch_size, n_channels, time, height, width]
-        sub_convolved = self._convolve(x, self.kernels)
+        sub_convolved = self._convolve(x, self._kernels)
         # [batch_size, n_channels, time, height, width]
         sub_activated = self._apply_nonlinearities(
             sub_convolved, self._nonlinearities_chan
@@ -139,7 +152,7 @@ class SubunitModel(Generic[Tensor]):
         # [batch_size, time]
         generator_signal = self._weighted_pooling(sub_activated, self.pooling_weights)
         # [batch_size, time]
-        out = self.nonlinearity_out.forward(generator_signal)
+        out = self._nonlinearity_out.forward(generator_signal)
         return out
 
     def _convolve(self, x: Tensor, kernel: Tensor) -> Tensor:

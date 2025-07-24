@@ -16,7 +16,9 @@ def test_subunit_model_forward_pass(
     outputs = []
     pooling_shape = x_shape[2:]
 
-    x = np.random.randn(*x_shape).astype(dtype)
+    x = np.random.rand(*x_shape).astype(dtype)
+    x = np.clip(x, 0, 1)  # Ensure input is between [0, 1]
+
     kernels = np.random.randn(n_channels, 1, *subunit_kernel).astype(dtype)
     pooling_weights = np.random.randn(n_channels, *pooling_shape).astype(dtype)
     pooling_biases = np.random.randn((1)).astype(dtype)
@@ -45,7 +47,7 @@ def test_subunit_model_forward_pass(
 
         for i, nonlinearity in enumerate(model._nonlinearities_chan):
             nonlinearity.weights = backend.convert_array(arr=nonlinearities_weights[i])
-        model.nonlinearity_out.weights = backend.convert_array(
+        model._nonlinearity_out.weights = backend.convert_array(
             arr=nonlinearities_weights[-1]
         )
 

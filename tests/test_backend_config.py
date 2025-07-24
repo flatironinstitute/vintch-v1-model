@@ -93,6 +93,26 @@ class TestBackend:
             arrays_equal
         ), f"{backend_cls.__name__}: Reshape failed or values changed!"
 
+    @pytest.mark.parametrize(
+        "input_shape",
+        [
+            (3, 3, 3),
+            (1, 1, 5, 5),
+            (1, 10, 3),
+        ],
+    )
+    def test_l1_norm_multiple_shapes(self, backend_cls, input_shape):
+        backend = backend_cls()
+        array = backend.randn(input_shape)
+
+        l1_norm_backend = backend.l1_norm(array)
+
+        l1_norm_numpy = np.sum(np.abs(backend.to_numpy(array)))
+
+        assert np.isclose(
+            l1_norm_backend, l1_norm_numpy
+        ), f"{backend_cls.__name__}: L1 norm mismatch for shape {input_shape}. Backend: {l1_norm_backend}, NumPy: {l1_norm_numpy}"
+
 
 def test_convolve_consistency_across_backends():
     backends = [TorchBackend(), JaxBackend(), NumpyBackend()]
