@@ -3,6 +3,14 @@ from .backend_config import get_backend
 from .nonlinearity import TentNonlinearity
 import einops
 
+from .utils import optimize_kernels, optimize_pooling_weights, alternating_fit_jax
+
+try:
+    import jax.numpy as jnp
+except ImportError:
+    jax = None
+    jnp = None
+
 Tensor = TypeVar("Tensor")
 
 
@@ -116,7 +124,7 @@ class SubunitModel(Generic[Tensor]):
         self._backend.check_input_type(biases)
         self._pooling_biases = biases
 
-    def _predict(self, x: Tensor) -> Tensor:
+    def _predict(self, x: Tensor, **kwargs) -> Tensor:
         """
         Forward pass through the whole model.
 
@@ -124,6 +132,8 @@ class SubunitModel(Generic[Tensor]):
         ----------
         x :
             Input tensor with shape [batch_size, 1, time, height, width].
+        **kwargs :
+            Additional keyword arguments.
 
         Returns
         -------
@@ -131,26 +141,31 @@ class SubunitModel(Generic[Tensor]):
             Output tensor with shape [batch_size, time].
         """
         self._backend.check_input_type(x)
+
         assert (
             x.shape[1] == 1
         ), f"Dimension 1 of input must be 1 (grayscale), got {x.shape[1]} instead."
 
         x = self._backend.set_dtype(x, self._kernels.dtype)
 
-        # check if the input range is between 0 and 1
-        x_min, x_max = x.min(), x.max()
-        assert (0 <= x_min <= 1) and (
-            0 <= x_max <= 1
-        ), f"Input values must be in the range [0, 1], got min: {x_min}, max: {x_max} instead."
+        # Check if the input range is between 0 and 1
+        # x_min, x_max = self._backend.lib.min(x), self._backend.lib.max(x)
+        # margin = 0.1
+        # if not (-margin <= x_min <= 1 + margin) or not (-margin <= x_max <= 1 + margin):
+        #     raise ValueError(
+        #         f"Input values must be in the range [0, 1] (with margin {margin}), got min: {x_min}, max: {x_max} instead."
+        #     )
+        kernels = kwargs.get("kernels", self._kernels)
+        pooling_weights = kwargs.get("pooling_weights", self._pooling_weights)
 
         # [batch_size, n_channels, time, height, width]
-        sub_convolved = self._convolve(x, self._kernels)
+        sub_convolved = self._convolve(x, kernels)
         # [batch_size, n_channels, time, height, width]
-        sub_activated = self._apply_nonlinearities(
+        non_lin_response = self._apply_nonlinearities(
             sub_convolved, self._nonlinearities_chan
         )
         # [batch_size, time]
-        generator_signal = self._weighted_pooling(sub_activated, self.pooling_weights)
+        generator_signal = self._weighted_pooling(non_lin_response, pooling_weights)
         # [batch_size, time]
         out = self._nonlinearity_out.forward(generator_signal)
         return out
@@ -225,3 +240,103 @@ class SubunitModel(Generic[Tensor]):
 
         pooled = pooled + self._pooling_biases
         return pooled
+
+    def fit(
+        self,
+        image: Tensor,
+        observed_spikes: Tensor,
+        learning_rate=0.01,
+        rtol=1e-5,
+        atol=1e-8,
+        iter=50,
+        verbose=False,
+    ):
+        kernels = self._kernels
+        pooling_weights = self._pooling_weights
+
+        result = alternating_fit_jax(
+            kernels=kernels,
+            pooling_weights=pooling_weights,
+            image=image,
+            observed_spikes=observed_spikes,
+            predict_fn=self._predict,
+            weighted_pooling_fn=self._weighted_pooling,
+            nonlinearity_out_fn=self._nonlinearity_out,
+            generate_subunit_convolutions=self._convolve,
+            apply_nonlinearities=lambda x: self._apply_nonlinearities(
+                x, self._nonlinearities_chan
+            ),
+            learning_rate=learning_rate,
+            rtol=rtol,
+            atol=atol,
+            verbose=verbose,
+            max_iter=iter,
+        )
+
+        self.kernels = result["kernels"]
+        self.pooling_weights = result["pooling_weights"]
+
+    def fit2(
+        self,
+        image: Tensor,
+        observed_spikes: Tensor,
+        learning_rate=0.01,
+        rtol=1e-5,
+        atol=1e-8,
+        iter=10,
+        inner_iter=10,
+        update_pooling=True,
+        update_kernels=True,
+        verbose=False,
+    ):
+
+        kernels = self._kernels
+        pooling_weights = self._pooling_weights
+
+        if update_kernels:
+
+            final_state_dict = optimize_kernels(
+                kernels,
+                image,
+                observed_spikes,
+                pooling_weights,
+                learning_rate,
+                predict_fn=self._predict,
+                iter=iter,
+                atol=atol,
+                rtol=rtol,
+                verbose=verbose,
+            )
+
+            final_kernels = final_state_dict["kernels"]
+            initial_loss = final_state_dict["initial_loss"]
+            final_loss = final_state_dict["final_loss"]
+
+            print(f"initial loss: {initial_loss}")
+            print(f"Final Kernel Loss: {final_loss}")
+
+            self.kernels = final_kernels
+
+        sub_convolved = self._convolve(image, self._kernels)
+        nonlinear_response = self._apply_nonlinearities(
+            sub_convolved, self._nonlinearities_chan
+        )
+
+        if update_pooling:
+            final_pooling_state = optimize_pooling_weights(
+                nonlinear_response=nonlinear_response,
+                observed_spikes=observed_spikes,
+                pooling_weights=pooling_weights,
+                learning_rate=learning_rate,
+                rtol=rtol,
+                atol=atol,
+                pool_iter=inner_iter,
+                verbose=verbose,
+                weighted_pooling_fn=self._weighted_pooling,
+                nonlinearity_out_fn=self._nonlinearity_out,
+            )
+
+            pooling_weights = final_pooling_state["pooling_weights"]
+            self.pooling_weights = pooling_weights
+
+        return nonlinear_response
