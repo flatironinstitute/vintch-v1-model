@@ -244,9 +244,9 @@ class SubunitModel(Generic[Tensor]):
         pooled = pooled + self._pooling_biases
         return pooled
 
-    def alternative_fit(
+    def alternating_fit(
         self,
-        image: Tensor,
+        input_data: Tensor,
         observed_spikes: Tensor,
         kernel_lr=0.01,
         pooling_lr=0.01,
@@ -258,12 +258,15 @@ class SubunitModel(Generic[Tensor]):
         update_pooling=True,
         inner_iter=1,
     ):
+        """
+        Fit the model using alternating optimization for kernels and pooling weights.
+        """
+
         kernels = self._kernels
         pooling_weights = self._pooling_weights
 
-        # Split data
         train_image, val_image, train_spikes, val_spikes = train_validation_split(
-            image, observed_spikes
+            input_data, observed_spikes
         )
 
         def kernel_loss(kernels, args):
@@ -443,7 +446,7 @@ class SubunitModel(Generic[Tensor]):
 
     def fit_together(
         self,
-        image: Tensor,
+        input_data: Tensor,
         observed_spikes: Tensor,
         lr=0.01,
         rtol=1e-5,
@@ -453,13 +456,12 @@ class SubunitModel(Generic[Tensor]):
     ):
         """
         Fit the model using joint optimization for kernels and pooling weights.
-        Returns: final_params, loss_history
         """
         kernels = self._kernels
         pooling_weights = self._pooling_weights
 
         train_image, val_image, train_spikes, val_spikes = train_validation_split(
-            image, observed_spikes
+            input_data, observed_spikes
         )
 
         def loss_fn(params, args):
