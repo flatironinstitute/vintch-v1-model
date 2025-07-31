@@ -113,6 +113,17 @@ class TestBackend:
             l1_norm_backend, l1_norm_numpy
         ), f"{backend_cls.__name__}: L1 norm mismatch for shape {input_shape}. Backend: {l1_norm_backend}, NumPy: {l1_norm_numpy}"
 
+    def test_to_numpy_method(self, backend_cls):
+        backend = backend_cls()
+        array = backend.lib.ones((2, 2))
+        np_array = backend.to_numpy(array)
+        assert isinstance(
+            np_array, np.ndarray
+        ), f"{backend_cls.__name__}: to_numpy did not return a numpy array."
+        assert (
+            np_array.shape == array.shape
+        ), f"{backend_cls.__name__}: to_numpy shape mismatch. Expected {array.shape}, got {np_array.shape}."
+
 
 def test_convolve_consistency_across_backends():
     backends = [TorchBackend(), JaxBackend(), NumpyBackend()]
