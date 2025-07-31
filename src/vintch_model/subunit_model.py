@@ -23,7 +23,8 @@ class SubunitModel(Generic[Tensor]):
     n_channels :
         Number of channels in the model.
     is_channel_excitatory :
-        List indicating whether each channel is excitatory. Must match the number of channels.
+        List indicating whether each channel is excitatory. Must match the number of 
+        channels. None is the equivalent of setting True for all channels.
     """
 
     def __init__(
