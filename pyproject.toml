@@ -39,6 +39,8 @@ docs = [
      "jupytext",
 ]
 
+dev = ["pytest"]
+
 [project.urls]
 Repository = "https://github.com/flatironinstitute/vintch-v1-model"
 
@@ -49,3 +51,6 @@ include = ["vintch_model"]
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
