@@ -17,7 +17,7 @@ class TentNonlinearity(Generic[Tensor]):
     backend_instance :
         Backend to use. Must be an instance of BackendBase.
     nonlinearity_mode :
-        Type of nonlinearity to initialize weights for. Weights will be fitted to data.
+        Type of nonlinearity to initialize weights for.
     """
 
     def __init__(
@@ -37,15 +37,13 @@ class TentNonlinearity(Generic[Tensor]):
         self._n_basis_funcs = n_basis_funcs
         self._backend = backend_instance
 
-        if nonlinearity_mode == "relu":
-            self._initialize_weights = self._initialize_relu_weights
-        elif nonlinearity_mode == "quadratic":
-            self._initialize_weights = self._initialize_quadratic_weights
-        elif nonlinearity_mode == "linear":
-            self._initialize_weights = self._initialize_linear_weights
-
         self._initialize_basis_functions()
-        self._initialize_weights()
+        if nonlinearity_mode == "relu":
+            self._initialize_relu_weights()
+        elif nonlinearity_mode == "quadratic":
+            self._initialize_quadratic_weights()
+        elif nonlinearity_mode == "linear":
+            self._initialize_linear_weights()
 
     def __call__(self, *args, **kwds):
         return self.forward(*args, **kwds)

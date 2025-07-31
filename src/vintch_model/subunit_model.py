@@ -1,4 +1,4 @@
-from typing import Any, Literal, TypeVar, Generic
+from typing import Any, Literal, TypeVar, Generic, Optional
 from .backend_config import get_backend
 from .nonlinearity import TentNonlinearity
 import einops
@@ -12,7 +12,7 @@ class SubunitModel(Generic[Tensor]):
 
     Parameters
     ----------
-    subunit_kernel :
+    subunit_kernel_shape :
         Tuple specifying the size of the subunit kernel filters.
     pooling_shape :
         Tuple specifying the shape of the pooling weights.
@@ -28,43 +28,29 @@ class SubunitModel(Generic[Tensor]):
 
     def __init__(
         self,
-        subunit_kernel: tuple = (8, 8, 8),
+        subunit_kernel_shape: tuple = (8, 8, 8),
         pooling_shape: tuple = (16, 16, 16),
         n_basis_funcs: int = 25,
         backend: Literal["jax", "torch", "numpy"] = "torch",
         n_channels: int = 2,
-        is_channel_excitatory: list = [True, False],
+        is_channel_excitatory: Optional[list[bool]] = None,
     ):
+        if is_channel_excitatory is None:
+            is_channel_excitatory = [True] * n_channels
         assert (
             len(is_channel_excitatory) == n_channels
         ), "Length of is_channel_excitatory must match n_channels"
-        self.subunit_kernel = subunit_kernel
-        self.n_channels = n_channels
+
         self._backend = get_backend(backend)
-
-        random_kernels = self._backend.randn((n_channels, 1, *subunit_kernel))
-        self._kernels = random_kernels / self._backend.l1_norm(random_kernels)
-        self.n_basis_funcs = n_basis_funcs
-
-        random_pooling_weights = self._backend.randn((n_channels, *pooling_shape))
-        self._pooling_weights = random_pooling_weights / self._backend.l1_norm(
-            random_pooling_weights
-        )
-        if len(pooling_shape) == len(subunit_kernel):
-            self._pooling_dims = "n_channels time height width"
-        elif len(pooling_shape) == len(subunit_kernel) - 1:
-            self._pooling_dims = "n_channels height width"
-        else:
-            raise ValueError(
-                "Invalid pooling_shape length. Must match subunit_kernel length or be one less."
-            )
-
-        self._pooling_biases = self._backend.randn((1,))
+        self._nonlinearities_mode = [
+            "relu" if is_channel_excitatory[c] else "quadratic"
+            for c in range(n_channels)
+        ]
         self._nonlinearities_chan = [
             TentNonlinearity(
                 backend_instance=self._backend,
                 n_basis_funcs=n_basis_funcs,
-                nonlinearity_mode="relu" if is_channel_excitatory[c] else "quadratic",
+                nonlinearity_mode=self._nonlinearities_mode[c],
             )
             for c in range(n_channels)
         ]
@@ -73,6 +59,26 @@ class SubunitModel(Generic[Tensor]):
             n_basis_funcs=n_basis_funcs,
             nonlinearity_mode="relu",
         )
+
+        random_kernels = self._backend.randn((n_channels, 1, *subunit_kernel_shape))
+        self._kernels = random_kernels / self._backend.l1_norm(random_kernels)
+
+        random_pooling_weights = self._backend.randn((n_channels, *pooling_shape))
+        self._pooling_weights = random_pooling_weights / self._backend.l1_norm(
+            random_pooling_weights
+        )
+        if len(pooling_shape) == len(subunit_kernel_shape):
+            self._pooling_dims = "n_channels time height width"
+        elif len(pooling_shape) == len(subunit_kernel_shape) - 1:
+            self._pooling_dims = "n_channels height width"
+        else:
+            raise ValueError(
+                "Invalid pooling_shape length. Must match subunit_kernel length or be one less."
+            )
+        self._pooling_bias = self._backend.randn((1,))
+
+        self.n_channels = n_channels
+        self.n_basis_funcs = n_basis_funcs
 
     def __call__(self, *args, **kwds):
         return self._predict(*args, **kwds)
@@ -104,17 +110,17 @@ class SubunitModel(Generic[Tensor]):
         self._pooling_weights = weights / self._backend.l1_norm(weights)
 
     @property
-    def pooling_biases(self):
-        return self._pooling_biases
+    def pooling_bias(self):
+        return self._pooling_bias
 
-    @pooling_biases.setter
-    def pooling_biases(self, biases: Any):
-        """Setter for pooling biases."""
+    @pooling_bias.setter
+    def pooling_bias(self, bias: Any):
+        """Setter for pooling bias."""
         assert (
-            biases.shape == self._pooling_biases.shape
-        ), f"Expected pooling biases shape to be {self._pooling_biases.shape}, got {biases.shape} instead."
-        self._backend.check_input_type(biases)
-        self._pooling_biases = biases
+            bias.shape == self._pooling_bias.shape
+        ), f"Expected pooling bias shape to be {self._pooling_bias.shape}, got {bias.shape} instead."
+        self._backend.check_input_type(bias)
+        self._pooling_bias = bias
 
     def _predict(self, x: Tensor) -> Tensor:
         """
@@ -150,12 +156,14 @@ class SubunitModel(Generic[Tensor]):
             sub_convolved, self._nonlinearities_chan
         )
         # [batch_size, time]
-        generator_signal = self._weighted_pooling(sub_activated, self.pooling_weights)
+        weighted_pooled = self._weighted_pooling(sub_activated, self.pooling_weights)
+        # [batch_size, time]
+        generator_signal = self._apply_bias(weighted_pooled, self.pooling_bias)
         # [batch_size, time]
         out = self._nonlinearity_out.forward(generator_signal)
         return out
 
-    def _convolve(self, x: Tensor, kernel: Tensor) -> Tensor:
+    def _convolve(self, x: Tensor, kernel: Optional[Tensor] = None) -> Tensor:
         """
         Perform convolution operation.
 
@@ -171,9 +179,14 @@ class SubunitModel(Generic[Tensor]):
         convolved :
             Convolved tensor with shape [batch_size, n_channels, time, height, width].
         """
+
+        if kernel is None:
+            kernel = self._kernels
         return self._backend.convolve(x, kernel)
 
-    def _apply_nonlinearities(self, x: Tensor, nonlinearities: list) -> Tensor:
+    def _apply_nonlinearities(
+        self, x: Tensor, nonlinearities: Optional[list] = None
+    ) -> Tensor:
         """
         Apply channel-specific nonlinearities.
 
@@ -189,16 +202,19 @@ class SubunitModel(Generic[Tensor]):
         transformed :
             Transformed tensor with shape [batch_size, n_channels, time, height, width].
         """
+        if nonlinearities is None:
+            nonlinearities = self._nonlinearities_chan
         transformed = [
             nonlinearity(x[:, c]) for c, nonlinearity in enumerate(nonlinearities)
         ]
-
         stacked_transformed, _ = einops.pack(
             transformed, pattern="batch_size * time height width"
         )
         return stacked_transformed
 
-    def _weighted_pooling(self, x: Tensor, pooling_weights: Tensor) -> Tensor:
+    def _weighted_pooling(
+        self, x: Tensor, pooling_weights: Optional[Tensor] = None
+    ) -> Tensor:
         """
         Perform weighted pooling operation.
 
@@ -217,11 +233,26 @@ class SubunitModel(Generic[Tensor]):
         pooled :
             Pooled tensor with shape [batch_size, time].
         """
+        if pooling_weights is None:
+            pooling_weights = self._pooling_weights
         pooled = einops.einsum(
             x,
             pooling_weights,
             f"batch_size n_channels time height width, {self._pooling_dims} -> batch_size time",
         )
-
-        pooled = pooled + self._pooling_biases
         return pooled
+
+    def _apply_bias(self, x: Tensor, pooling_bias: Optional[Tensor] = None) -> Tensor:
+        """
+        Apply bias to the input tensor.
+
+        Parameters
+        ----------
+        x :
+            Input tensor with shape [batch_size, time].
+        pooling_bias :
+            Bias tensor with shape [1,].
+        """
+        if pooling_bias is None:
+            pooling_bias = self._pooling_bias
+        return x + pooling_bias
