@@ -23,7 +23,7 @@ class SubunitModel(Generic[Tensor]):
     n_channels :
         Number of channels in the model.
     is_channel_excitatory :
-        List indicating whether each channel is excitatory. Must match the number of 
+        List indicating whether each channel is excitatory. Must match the number of
         channels. None is the equivalent of setting True for all channels.
     """
 
@@ -144,11 +144,11 @@ class SubunitModel(Generic[Tensor]):
 
         x = self._backend.set_dtype(x, self._kernels.dtype)
 
-        # check if the input range is between 0 and 1
         x_min, x_max = x.min(), x.max()
-        assert (0 <= x_min <= 1) and (
-            0 <= x_max <= 1
-        ), f"Input values must be in the range [0, 1], got min: {x_min}, max: {x_max} instead."
+        if not (0 <= x_min <= 1 and 0 <= x_max <= 1):
+            Warning(
+                f"Input values are not in the range [0, 1], got min: {x_min}, max: {x_max} instead."
+            )
 
         # [batch_size, n_channels, time, height, width]
         sub_convolved = self._convolve(x, self._kernels)
