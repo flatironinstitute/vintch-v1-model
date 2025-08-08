@@ -34,7 +34,7 @@ class SubunitModel(Generic[Tensor]):
     n_channels :
         Number of channels in the model.
     is_channel_excitatory :
-        List indicating whether each channel is excitatory. Must match the number of 
+        List indicating whether each channel is excitatory. Must match the number of
         channels. None is the equivalent of setting True for all channels.
     """
 
@@ -158,15 +158,11 @@ class SubunitModel(Generic[Tensor]):
 
         x = self._backend.set_dtype(x, self._kernels.dtype)
 
-        # Check if the input range is between 0 and 1
-        # x_min, x_max = self._backend.lib.min(x), self._backend.lib.max(x)
-        # margin = 0.1
-        # if not (-margin <= x_min <= 1 + margin) or not (-margin <= x_max <= 1 + margin):
-        #     raise ValueError(
-        #         f"Input values must be in the range [0, 1] (with margin {margin}), got min: {x_min}, max: {x_max} instead."
-        #     )
-        kernels = kwargs.get("kernels", self._kernels)
-        pooling_weights = kwargs.get("pooling_weights", self._pooling_weights)
+        x_min, x_max = x.min(), x.max()
+        if not (0 <= x_min <= 1 and 0 <= x_max <= 1):
+            Warning(
+                f"Input values are not in the range [0, 1], got min: {x_min}, max: {x_max} instead."
+            )
 
         # [batch_size, n_channels, time, height, width]
         sub_convolved = self._convolve(x, kernels)

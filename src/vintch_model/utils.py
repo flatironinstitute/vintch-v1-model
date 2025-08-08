@@ -1,21 +1,47 @@
 import numpy as np
+from typing import Literal
+from .backend_config import get_backend
 
 
 def create_gabor_filter(
-    frequency=0.25,
-    theta=np.pi / 4,
-    sigma_x=3.0,
-    sigma_y=3.0,
-    n_stds=3,
-    offset=0,
+    frequency: float = 0.25,
+    theta: float = np.pi / 4,
+    sigma_x: float = 3.0,
+    sigma_y: float = 3.0,
+    n_stds: int = 3,
+    offset: float = 0.0,
     size=None,
+    backend: Literal["torch", "jax", "numpy"] = "numpy",
 ):
     """
     Generate a Gabor filter.
 
-    Returns:
-        gabor :
-            The generated complex Gabor filter.
+    This function mimics the behavior of the `skimage.filters.gabor` function, generating a complex Gabor
+    filter, but allowing for custom size and normalized to [0,1] range.
+
+    Parameters
+    ----------
+    frequency :
+        Frequency of the sinusoidal factor.
+    theta :
+        Orientation of the Gabor function.
+    sigma_x :
+        Standard deviation of the Gaussian envelope along the x-axis.
+    sigma_y :
+        Standard deviation of the Gaussian envelope along the y-axis.
+    n_stds :
+        The linear size of the kernel is n_stds standard deviations
+    offset :
+        Phase offset of the sinusoidal factor.
+    size :
+        Size of the filter (height, width).
+    backend :
+        Computational backend to use: 'torch', 'jax', or 'numpy'.
+
+    Returns
+    -------
+    gabor :
+        The generated complex Gabor filter in the specified backend in the range [-1, 1].
     """
 
     ct = np.cos(theta)
@@ -42,31 +68,46 @@ def create_gabor_filter(
     )
     g *= 1 / (2 * np.pi * sigma_x * sigma_y)
 
-    g = (g - np.min(g)) / (np.max(g) - np.min(g))
+    g = 2 * (g - np.min(g)) / (np.max(g) - np.min(g)) - 1
+
+    backend_instance = get_backend(backend)
+    g = backend_instance.convert_array(g)
     return g
 
 
-def generate_grating(size=10, spatial_freq=10, orientation=0, phase=0):
+def generate_grating(
+    size: int = 10,
+    spatial_freq: float = 10,
+    orientation: float = 0,
+    phase: float = 0,
+    backend: Literal["torch", "jax", "numpy"] = "numpy",
+):
     """
     Generate an oriented sinusoidal grating or a stack of gratings if orientation or phase is an array.
 
-    Parameters:
-        size (int): Width and height of the square image (in pixels)
-        spatial_freq (float): Spatial frequency (cycles per image)
-        orientation (float or array-like): Orientation of grating (in degrees, counter-clockwise)
-        phase (float or array-like): Phase shift (in degrees)
+    Parameters
+    ----------
+    size :
+        Size of the grating (height and width).
+    spatial_freq :
+        Spatial frequency of the grating.
+    orientation :
+        Orientation(s) of the grating in degrees. Can be a scalar or array.
+    phase :
+        Phase(s) of the grating in degrees. Can be a scalar or array.
+    backend :
+        Computational backend to use: 'torch', 'jax', or 'numpy'.
 
-    Returns:
-        2D NumPy array or 3D NumPy array: Single grating or stack of gratings
+    Returns
+    -------
+    grating :
+        The generated grating or stack of gratings, normalized to [0, 1].
     """
-    # Ensure orientation and phase are arrays for consistent processing
     orientation = np.atleast_1d(orientation)
     phase = np.atleast_1d(phase)
 
-    # Create a coordinate grid centered at (0,0)
     x, y = np.meshgrid(np.arange(size), np.arange(size))
 
-    # Generate gratings for all combinations of orientation and phase
     gratings = []
     for ori in orientation:
         for ph in phase:
@@ -77,14 +118,78 @@ def generate_grating(size=10, spatial_freq=10, orientation=0, phase=0):
             )
             gratings.append(grating_norm)
 
-    # Stack gratings along a new axis if multiple gratings are generated
-    return np.stack(gratings, axis=0) if len(gratings) > 1 else gratings[0]
+    result = np.stack(gratings, axis=0) if len(gratings) > 1 else gratings[0]
+    backend_instance = get_backend(backend)
+    result = backend_instance.convert_array(result)
+    return result
+
+
+def create_gaussian_map(shape: tuple, sigma: float) -> np.ndarray:
+    """
+    Create a Gaussian map with the given shape and standard deviation.
+
+    Parameters
+    ----------
+    shape :
+        Shape of the Gaussian map (3D or 4D). For 4D, the shape should be (input_channels, time, height, width).
+        For 3D, the shape should be (input_channels, height, width).
+    sigma :
+        Standard deviation of the Gaussian.
+
+    Returns
+    -------
+    gaussian :
+        The generated Gaussian map.
+    """
+    map_size = shape[-1]
+    center = map_size // 2
+    if len(shape) == 4:
+        x, y, t = np.meshgrid(
+            np.arange(shape[3]), np.arange(shape[2]), np.arange(shape[1]), indexing="ij"
+        )
+        gaussian = np.exp(
+            -((x - center) ** 2 + (y - center) ** 2 + (t - center) ** 2)
+            / (2 * sigma**2)
+        )
+    elif len(shape) == 3:
+        x, y = np.meshgrid(np.arange(map_size), np.arange(map_size), indexing="ij")
+        gaussian = np.exp(-((x - center) ** 2 + (y - center) ** 2) / (2 * sigma**2))
+    else:
+        raise ValueError("parameter shape must be 3D or 4D.")
+
+    gaussian /= gaussian.max()
+
+    gaussian = np.expand_dims(gaussian, axis=0)
+    return gaussian
 
 
 def train_validation_split(data, output, split_ratio=0.8):
+    """
+    Split data and output into training and validation sets.
+
+    Parameters
+    ----------
+    data :
+        Input data to split.
+    output :
+        Output data to split.
+    split_ratio :
+        Fraction of data to use for training.
+
+    Returns
+    -------
+    x_train :
+        Training input.
+    x_val :
+        Validation input.
+    y_train :
+        Training target.
+    y_val :
+        Validation target.
+    """
     split_index = int(len(data) * split_ratio)
-    train_data = data[:split_index]
-    val_data = data[split_index:]
-    train_output = output[:split_index]
-    val_output = output[split_index:]
-    return train_data, val_data, train_output, val_output
+    x_train = data[:split_index]
+    x_val = data[split_index:]
+    y_train = output[:split_index]
+    y_val = output[split_index:]
+    return x_train, x_val, y_train, y_val
