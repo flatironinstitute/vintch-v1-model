@@ -36,14 +36,14 @@ def test_subunit_model_forward_pass(
         pooling_biases_backend = backend.convert_array(arr=pooling_biases, dtype=dtype)
         model = SubunitModel(
             backend=backend_name,
-            subunit_kernel=subunit_kernel,
+            subunit_kernel_shape=subunit_kernel,
             pooling_shape=pooling_shape,
             n_channels=n_channels,
             n_basis_funcs=n_basis_funcs,
         )
         model.kernels = kernels_backend
         model.pooling_weights = pooling_weights_backend
-        model.pooling_biases = pooling_biases_backend
+        model.pooling_bias = pooling_biases_backend
 
         for i, nonlinearity in enumerate(model._nonlinearities_chan):
             nonlinearity.weights = backend.convert_array(arr=nonlinearities_weights[i])
