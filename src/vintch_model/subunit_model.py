@@ -158,11 +158,16 @@ class SubunitModel(Generic[Tensor]):
 
         x = self._backend.set_dtype(x, self._kernels.dtype)
 
-        x_min, x_max = x.min(), x.max()
-        if not (0 <= x_min <= 1 and 0 <= x_max <= 1):
-            Warning(
-                f"Input values are not in the range [0, 1], got min: {x_min}, max: {x_max} instead."
-            )
+        show_warning = True
+        if jax is not None and hasattr(jax.core, "trace_state_clean"):
+            show_warning = jax.core.trace_state_clean()
+
+        if show_warning:
+            x_min, x_max = x.min(), x.max()
+            if not (0 <= x_min <= 1 and 0 <= x_max <= 1):
+                print(
+                    f"Input values are not in the range [0, 1], got min: {x_min}, max: {x_max} instead."
+                )
 
         kernels = kwargs.get("kernels", self._kernels)
         pooling_weights = kwargs.get("pooling_weights", self._pooling_weights)
@@ -278,40 +283,79 @@ class SubunitModel(Generic[Tensor]):
     def alternating_fit(
         self,
         input_data: Tensor,
-        observed_spikes: Tensor,
-        kernel_lr=0.01,
-        pooling_lr=0.01,
-        rtol=1e-5,
-        atol=1e-8,
-        iter=50,
-        verbose=False,
-        update_kernels=True,
-        update_pooling=True,
-        inner_iter=1,
+        observed_rate: Tensor,
+        kernel_lr: float = 0.01,
+        pooling_lr: float = 0.01,
+        rtol: float = 1e-5,
+        atol: float = 1e-8,
+        iter: int = 50,
+        verbose: bool = False,
+        update_kernels: bool = True,
+        update_pooling: bool = True,
+        inner_iter: int = 1,
     ):
         """
         Fit the model using alternating optimization for kernels and pooling weights.
+
+        Parameters
+        ----------
+        input_data :
+            Input data.
+        observed_rate :
+            Observed firing rate.
+        kernel_lr :
+            Learning rate for the kernel optimizer.
+        pooling_lr :
+            Learning rate for the pooling weights optimizer.
+        rtol :
+            Relative tolerance for convergence.
+        atol :
+            Absolute tolerance for convergence.
+        iter :
+            Maximum number of outer iterations.
+        verbose :
+            Whether to print progress information during fitting.
+        update_kernels :
+            Whether to update kernels during optimization.
+        update_pooling :
+            Whether to update pooling weights during optimization.
+        inner_iter :
+            Number of inner iterations for each parameter update.
+
+        Returns
+        -------
+        loss_history :
+            Array of validation loss values at each iteration.
         """
 
         kernels = self._kernels
         pooling_weights = self._pooling_weights
 
-        train_image, val_image, train_spikes, val_spikes = train_validation_split(
-            input_data, observed_spikes
+        train_image, val_image, train_rate, val_rate = train_validation_split(
+            input_data, observed_rate
         )
 
-        def kernel_loss(kernels, args):
-            image, observed_spikes, pooling_weights = args
+        def kernel_loss_fn(kernels, args):
+            image, observed_rate, pooling_weights = args
             pred_rate = self._predict(
                 image, kernels=kernels, pooling_weights=pooling_weights
             )
-            return jnp.mean((pred_rate - observed_spikes) ** 2)
+            mse = jnp.mean((pred_rate - observed_rate) ** 2)
+            l1_norm = jnp.sum(self._backend.l1_norm(kernels))
+            alpha = 1e-5
+            penalty = alpha * jnp.abs(l1_norm - 1)
+            return mse + penalty
 
-        def pooling_loss(pooling_weights, args):
-            nl_response, observed_spikes = args
+        def pooling_loss_fn(pooling_weights, args):
+            nl_response, observed_rate = args
             pooled = self._weighted_pooling(nl_response, pooling_weights)
-            pred_rate = self._nonlinearity_out(pooled)
-            return jnp.mean((pred_rate - observed_spikes) ** 2)
+            generator_signal = self._apply_bias(pooled, self.pooling_bias)
+            pred_rate = self._nonlinearity_out(generator_signal)
+            mse = jnp.mean((pred_rate - observed_rate) ** 2)
+            l1_norm = jnp.sum(self._backend.l1_norm(pooling_weights))
+            alpha = 1e-5
+            penalty = alpha * jnp.abs(l1_norm - 1)
+            return mse + penalty
 
         def full_loss(input, output, kernels, pooling_weights):
             pred_rate = self._predict(
@@ -339,12 +383,18 @@ class SubunitModel(Generic[Tensor]):
 
             def kernel_update_body(_, carry):
                 kernels, kernel_opt_state = carry
-                _, grad = jax.value_and_grad(kernel_loss)(
-                    kernels, (train_image, train_spikes, pooling_weights)
+                kernel_loss, grad = jax.value_and_grad(kernel_loss_fn)(
+                    kernels, (train_image, train_rate, pooling_weights)
                 )
                 grad = jax.tree_util.tree_map(lambda g: jnp.clip(g, -1.0, 1.0), grad)
                 updates, kernel_opt_state = kernel_opt.update(
-                    grad, kernel_opt_state, kernels
+                    grad,
+                    kernel_opt_state,
+                    kernels,
+                    value=kernel_loss,
+                    grad=grad,
+                    value_fn=kernel_loss_fn,
+                    args=(train_image, train_rate, pooling_weights),
                 )
                 kernels = optax.apply_updates(kernels, updates)
                 return kernels, kernel_opt_state
@@ -355,8 +405,8 @@ class SubunitModel(Generic[Tensor]):
                 nl_response = self._apply_nonlinearities(
                     subunit_response, self._nonlinearities_chan
                 )
-                loss_value, grad = jax.value_and_grad(pooling_loss)(
-                    pooling_weights, (nl_response, train_spikes)
+                loss_value, grad = jax.value_and_grad(pooling_loss_fn)(
+                    pooling_weights, (nl_response, train_rate)
                 )
                 grad = jax.tree_util.tree_map(lambda g: jnp.clip(g, -1.0, 1.0), grad)
                 updates, pool_opt_state = pool_opt.update(
@@ -365,8 +415,8 @@ class SubunitModel(Generic[Tensor]):
                     pooling_weights,
                     value=loss_value,
                     grad=grad,
-                    value_fn=pooling_loss,
-                    args=(nl_response, train_spikes),
+                    value_fn=pooling_loss_fn,
+                    args=(nl_response, train_rate),
                 )
                 pooling_weights = optax.apply_updates(pooling_weights, updates)
                 return pooling_weights, pool_opt_state
@@ -380,8 +430,8 @@ class SubunitModel(Generic[Tensor]):
                     0, inner_iter, pool_update_body, (pooling_weights, pool_opt_state)
                 )
 
-            train_loss = full_loss(train_image, train_spikes, kernels, pooling_weights)
-            val_loss = full_loss(val_image, val_spikes, kernels, pooling_weights)
+            train_loss = full_loss(train_image, train_rate, kernels, pooling_weights)
+            val_loss = full_loss(val_image, val_rate, kernels, pooling_weights)
 
             loss_history = loss_history.at[i].set(val_loss)
 
@@ -411,13 +461,13 @@ class SubunitModel(Generic[Tensor]):
             )
 
         # Initialize optimization states
-        kernel_opt = optax.adam(kernel_lr)
+        kernel_opt = optax.lbfgs(kernel_lr)
         kernel_opt_state = kernel_opt.init(kernels)
 
         pool_opt = optax.lbfgs(pooling_lr)
         pool_opt_state = pool_opt.init(pooling_weights)
 
-        initial_val_loss = full_loss(val_image, val_spikes, kernels, pooling_weights)
+        initial_val_loss = full_loss(val_image, val_rate, kernels, pooling_weights)
         loss_history = jnp.zeros(iter)
         state = (
             0,
@@ -446,10 +496,10 @@ class SubunitModel(Generic[Tensor]):
 
         # Compute final train_loss and val_loss for return
         final_train_loss = full_loss(
-            train_image, train_spikes, final_kernels, final_pooling_weights
+            train_image, train_rate, final_kernels, final_pooling_weights
         )
         final_val_loss = full_loss(
-            val_image, val_spikes, final_kernels, final_pooling_weights
+            val_image, val_rate, final_kernels, final_pooling_weights
         )
 
         if final_iter < iter:
@@ -478,31 +528,53 @@ class SubunitModel(Generic[Tensor]):
     def fit_together(
         self,
         input_data: Tensor,
-        observed_spikes: Tensor,
-        lr=0.01,
-        rtol=1e-5,
-        atol=1e-8,
-        iter=50,
-        verbose=False,
+        observed_rate: Tensor,
+        lr: float = 0.01,
+        rtol: float = 1e-5,
+        atol: float = 1e-8,
+        iter: int = 50,
+        verbose: bool = False,
     ):
         """
         Fit the model using joint optimization for kernels and pooling weights.
+
+        Parameters
+        ----------
+        input_data :
+            Input data tensor for training and validation.
+        observed_rate :
+            Observed firing rates corresponding to the input data.
+        lr :
+            Learning rate for the optimizer.
+        rtol :
+            Relative tolerance for convergence.
+        atol :
+            Absolute tolerance for convergence.
+        iter :
+            Maximum number of iterations.
+        verbose :
+            Whether to print progress information during fitting.
+
+        Returns
+        -------
+        loss_history :
+            Array of validation loss values at each iteration.
         """
         kernels = self._kernels
         pooling_weights = self._pooling_weights
 
-        train_image, val_image, train_spikes, val_spikes = train_validation_split(
-            input_data, observed_spikes
+        train_image, val_image, train_rate, val_rate = train_validation_split(
+            input_data, observed_rate
         )
 
-        def loss_fn(params, args):
-            train_image, train_spikes = args
-            kernels = params["kernels"]
-            pooling_weights = params["pooling_weights"]
+        def loss_fn(parameters, args):
+            image, target_rate = args
+            kernels = parameters["kernels"]
+            pooling_weights = parameters["pooling_weights"]
             pred_rate = self._predict(
-                train_image, kernels=kernels, pooling_weights=pooling_weights
+                image, kernels=kernels, pooling_weights=pooling_weights
             )
-            return jnp.mean((pred_rate - train_spikes) ** 2)
+            return jnp.mean((pred_rate - target_rate) ** 2)
 
         loss_history = jnp.zeros(iter)
 
@@ -519,22 +591,22 @@ class SubunitModel(Generic[Tensor]):
             return jnp.logical_and(i < iter, jnp.logical_or(i < 10, not_converged))
 
         def body_fun(state):
-            i, params, opt_state, _, current_val_loss, loss_history = state
+            i, parameters, optimizer_state, _, current_val_loss, loss_history = state
             loss, grad = jax.value_and_grad(loss_fn)(
-                params, (train_image, train_spikes)
+                parameters, (train_image, train_rate)
             )
             grad = jax.tree_util.tree_map(lambda g: jnp.clip(g, -1.0, 1.0), grad)
-            updates, opt_state = opt.update(
+            updates, optimizer_state = optimizer.update(
                 grad,
-                opt_state,
-                params,
+                optimizer_state,
+                parameters,
                 value=loss,
                 grad=grad,
                 value_fn=loss_fn,
-                args=(train_image, train_spikes),
+                args=(train_image, train_rate),
             )
-            params = optax.apply_updates(params, updates)
-            new_val_loss = loss_fn(params, (val_image, val_spikes))
+            parameters = optax.apply_updates(parameters, updates)
+            new_val_loss = loss_fn(parameters, (val_image, val_rate))
             loss_history = loss_history.at[i].set(new_val_loss)
             if verbose:
                 jax.debug.print(
@@ -546,39 +618,46 @@ class SubunitModel(Generic[Tensor]):
                 )
             return (
                 i + 1,
-                params,
-                opt_state,
+                parameters,
+                optimizer_state,
                 current_val_loss,
                 new_val_loss,
                 loss_history,
             )
 
-        opt = optax.lbfgs(lr)
-        params = {"kernels": kernels, "pooling_weights": pooling_weights}
-        opt_state = opt.init(params)
-        initial_val_loss = loss_fn(params, (val_image, val_spikes))
+        optimizer = optax.lbfgs(lr)
+        parameters = {"kernels": kernels, "pooling_weights": pooling_weights}
+        optimizer_state = optimizer.init(parameters)
+        initial_validation_loss = loss_fn(parameters, (val_image, val_rate))
         loss_history = jnp.zeros(iter)
         state = (
             0,
-            params,
-            opt_state,
-            initial_val_loss * 10,
-            initial_val_loss,
+            parameters,
+            optimizer_state,
+            initial_validation_loss * 10,
+            initial_validation_loss,
             loss_history,
         )
 
         final_state = jax.lax.while_loop(cond_fun, body_fun, state)
-        final_iter, final_params, _, _, final_val_loss, final_loss_history = final_state
+        (
+            final_iteration,
+            final_parameters,
+            _,
+            _,
+            final_validation_loss,
+            final_loss_history,
+        ) = final_state
 
-        final_train_loss = loss_fn(final_params, (train_image, train_spikes))
-        final_val_loss = loss_fn(final_params, (val_image, val_spikes))
+        final_training_loss = loss_fn(final_parameters, (train_image, train_rate))
+        final_validation_loss = loss_fn(final_parameters, (val_image, val_rate))
 
-        if verbose or final_iter < iter:
+        if verbose or final_iteration < iter:
             print(
-                f"Optimization stopped at iteration {final_iter}. Final val loss: {float(final_val_loss):.6f}, Final train loss: {float(final_train_loss):.6f}"
+                f"Optimization stopped at iteration {final_iteration}. Final val loss: {float(final_validation_loss):.6f}, Final train loss: {float(final_training_loss):.6f}"
             )
 
-        self.kernels = final_params["kernels"]
-        self.pooling_weights = final_params["pooling_weights"]
+        self.kernels = final_parameters["kernels"]
+        self.pooling_weights = final_parameters["pooling_weights"]
 
-        return final_loss_history[:final_iter]
+        return final_loss_history[:final_iteration]
