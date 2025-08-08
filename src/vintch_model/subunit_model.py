@@ -164,6 +164,9 @@ class SubunitModel(Generic[Tensor]):
                 f"Input values are not in the range [0, 1], got min: {x_min}, max: {x_max} instead."
             )
 
+        kernels = kwargs.get("kernels", self._kernels)
+        pooling_weights = kwargs.get("pooling_weights", self._pooling_weights)
+
         # [batch_size, n_channels, time, height, width]
         sub_convolved = self._convolve(x, kernels)
         # [batch_size, n_channels, time, height, width]
@@ -171,7 +174,7 @@ class SubunitModel(Generic[Tensor]):
             sub_convolved, self._nonlinearities_chan
         )
         # [batch_size, time]
-        weighted_pooled = self._weighted_pooling(non_lin_response, self.pooling_weights)
+        weighted_pooled = self._weighted_pooling(non_lin_response, pooling_weights)
         # [batch_size, time]
         generator_signal = self._apply_bias(weighted_pooled, self.pooling_bias)
         # [batch_size, time]
