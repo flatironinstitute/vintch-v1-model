@@ -1,17 +1,17 @@
-# vintch-v1-model
-Implementation of V1 model from Vintch et al., 2015
+# vintch-v1-model  
+Implementation of the V1 model from Vintch et al., 2015
 
 ---
 
-**Note:** This implementation is still in progress. Here is the current state of the project, a description of the main branches, and the next steps planned for development.
+Note: This implementation is a work in progress. Below is the current status of the project.
 
-### Repository Structure & Branches
+### Repository Structure
 
-- **main**: The stable base branch.
-
-- **refine_model**: Contains small improvements to the model, such as switching errors to warnings. This branch also introduces utility and plotting functions like `create_gabor_filter` and `create_gaussian_map`, which are useful for simulating different cell types and visualizing model components.
-
-- **model_fit**: This branch contains the fitting methods implemented within the `subunit_model` script. These methods are designed to fit the model parameters `kernels` and `pooling_weights` to data. I also left a fitting script in `docs/source/examples`, which you can run directly. This script does parameter recovery.
+- `utils.py` – Contains helper functions such as `create_gabor_filter` and `create_gaussian_map`, useful for simulating different cell types.
+- `plotting.py` – Includes functions for visualizing the components of the model.
+- `docs/source/notebooks/` – Includes two notebooks demonstrating how to simulate different cell types and how to apply MAD competition for simple and complex cell models.
+- `subunit_model.py` – Implements the model fitting methods. These are designed to optimize the parameters `kernels` and `pooling_weights`.  
+  An example fitting script is available in `docs/source/examples/`.
 
 ---
 
@@ -28,4 +28,4 @@ Implementation of V1 model from Vintch et al., 2015
 
 ---
 
-For any questions, please contact me at **pacresda@gmail.com**.
+For questions or issues, please open an issue on the repository.
