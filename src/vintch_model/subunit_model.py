@@ -175,7 +175,7 @@ class SubunitModel(Generic[Tensor]):
             sub_convolved, self._nonlinearities_chan
         )
         # [batch_size, time]
-        weighted_pooled = self._weighted_pooling(sub_activated, self.pooling_weights)
+        weighted_pooled = self._weighted_pooling(non_lin_response, self.pooling_weights)
         # [batch_size, time]
         generator_signal = self._apply_bias(weighted_pooled, self.pooling_bias)
         # [batch_size, time]
