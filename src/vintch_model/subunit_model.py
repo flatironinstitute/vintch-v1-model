@@ -99,7 +99,7 @@ class SubunitModel(Generic[Tensor]):
             new_kernels.shape == self._kernels.shape
         ), f"Expected kernel shape to be {self._kernels.shape}, got {new_kernels.shape} instead."
         self._backend.check_input_type(new_kernels)
-        self._kernels = new_kernels / self._backend.l1_norm(new_kernels)
+        self._kernels = new_kernels #/ self._backend.l1_norm(new_kernels)
 
     @property
     def pooling_weights(self):
@@ -112,7 +112,7 @@ class SubunitModel(Generic[Tensor]):
             weights.shape == self._pooling_weights.shape
         ), f"Expected pooling weights shape to be {self._pooling_weights.shape}, got {weights.shape} instead."
         self._backend.check_input_type(weights)
-        self._pooling_weights = weights / self._backend.l1_norm(weights)
+        self._pooling_weights = weights #/ self._backend.l1_norm(weights)
 
     @property
     def pooling_biases(self):
@@ -353,6 +353,8 @@ class SubunitModel(Generic[Tensor]):
             val_loss = full_loss(val_image, val_spikes, kernels, pooling_weights)
 
             loss_history = loss_history.at[i].set(val_loss)
+            # if val_loss < 10**-5:
+            #     xxxx=1
 
             if verbose:
                 jax.lax.cond(
@@ -380,10 +382,25 @@ class SubunitModel(Generic[Tensor]):
             )
 
         # Initialize optimization states
-        kernel_opt = optax.adam(kernel_lr)
+
+        def adam_with_l1_projection(radius, learning_rate):
+            adam = optax.adam(learning_rate=learning_rate)
+
+            def init_fn(params):
+                return adam.init(params)
+
+            def update_fn(grads, state, params):
+                updates, new_state = adam.update(grads, state, params)
+                new_params = optax.apply_updates(params, updates)
+                new_params = jax.tree_util.tree_map(lambda p: optax.projections.projection_l1_ball(p, radius), new_params)
+                return new_params - params, new_state  # return "update" relative to old params
+
+            return optax.GradientTransformation(init_fn, update_fn)
+
+        kernel_opt = adam_with_l1_projection(radius=1.0, learning_rate=kernel_lr)
         kernel_opt_state = kernel_opt.init(kernels)
 
-        pool_opt = optax.lbfgs(pooling_lr)
+        pool_opt = optax.lbfgs(pooling_lr)#adam_with_l1_projection(radius=1.0, learning_rate=pooling_lr)#optax.lbfgs(pooling_lr)
         pool_opt_state = pool_opt.init(pooling_weights)
 
         initial_val_loss = full_loss(val_image, val_spikes, kernels, pooling_weights)
