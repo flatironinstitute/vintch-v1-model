@@ -20,16 +20,16 @@ class SubunitParams(ModelParams):
         Nonlinearity basis coefficients per channel, ``[n_basis]``.
     pooling_weights :
         Pooling map per channel, ``[p_rows, p_cols]``.
-    intercept :
+    offset :
         Constant added to the sum of the channels.
     """
 
     kernel: PyTree[Float[Array, "lags k_rows k_cols"]]
     coef: PyTree[Float[Array, " n_basis"]]
     pooling_weights: PyTree[Float[Array, "p_rows p_cols"]]
-    intercept: Float[Array, ""]
+    offset: Float[Array, ""]
 
     @staticmethod
     def regularizable_subtrees() -> list[Callable[["SubunitParams"], PyTree]]:
-        """Pooling maps and nonlinearity coefficients; never the kernel or the intercept."""
+        """Pooling maps and nonlinearity coefficients; never the kernel or the offset."""
         return [lambda p: p.pooling_weights, lambda p: p.coef]
