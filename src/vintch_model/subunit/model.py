@@ -136,12 +136,36 @@ class Pooling(eqx.Module):
 class SubunitModel(eqx.Module):
     """Generator signal: offset + sum over channels of pooled subunit activations.
 
-    Configuration only; parameters come in a ``SubunitParams``.
+    Configuration only; parameters come in a ``SubunitParams``. The three stages are
+    exposed separately, so a fit that holds the earlier stages fixed can compute them
+    once and start from the stage it changes.
     """
 
     convolution: Convolution
     nonlinearity: BasisNonlinearity
     pooling: Pooling
+
+    def pre_activations(
+        self, params: SubunitParams, stimulus: Float[Array, "time lags rows cols"]
+    ) -> PyTree[Float[Array, "time p_rows p_cols"]]:
+        """Kernel applied at every position (uses ``params.kernel``)."""
+        return self.convolution(params.kernel, stimulus)
+
+    def activations(
+        self,
+        params: SubunitParams,
+        pre_activations: PyTree[Float[Array, "time p_rows p_cols"]],
+        bounds: PyTree[Float[Array, "2"]],
+    ) -> PyTree[Float[Array, "time p_rows p_cols"]]:
+        """Subunit nonlinearity (uses ``params.coef``)."""
+        return self.nonlinearity(params.coef, pre_activations, bounds)
+
+    def output(
+        self, params: SubunitParams, activations: PyTree[Float[Array, "time p_rows p_cols"]]
+    ) -> Float[Array, " time"]:
+        """Pooling and sum over channels (uses ``params.pooling_weights`` and ``params.offset``)."""
+        pooled = self.pooling(params.pooling_weights, activations)
+        return params.offset + jax.tree.reduce(jnp.add, pooled)
 
     def __call__(
         self,
@@ -149,10 +173,9 @@ class SubunitModel(eqx.Module):
         stimulus: Float[Array, "time lags rows cols"],
         bounds: PyTree[Float[Array, "2"]],
     ) -> Float[Array, " time"]:
-        pre_activations = self.convolution(params.kernel, stimulus)
-        activations = self.nonlinearity(params.coef, pre_activations, bounds)
-        pooled = self.pooling(params.pooling_weights, activations)
-        return params.offset + jax.tree.reduce(jnp.add, pooled)
+        pre_activations = self.pre_activations(params, stimulus)
+        activations = self.activations(params, pre_activations, bounds)
+        return self.output(params, activations)
 
 
 def tents(
