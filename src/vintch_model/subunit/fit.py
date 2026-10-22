@@ -16,6 +16,27 @@ from nemos.solvers import get_solver
 from .params import SubunitParams
 
 
+def fix_params_from(params: SubunitParams, learned: SubunitParams) -> SubunitParams:
+    """NeMoS-style ``fix_params`` that holds every parameter not learned at its current value.
+
+    Parameters
+    ----------
+    params :
+        Current values of all parameters.
+    learned :
+        Prefix tree of booleans marking what is learned, e.g.
+        ``SubunitParams(kernel=False, coef=False, pooling_weights=True, offset=True)``.
+
+    Returns
+    -------
+    :
+        ``params`` with ``None`` at every learned leaf.
+    """
+    return jax.tree.map(
+        lambda flag, p: jax.tree.map(lambda _: None, p) if flag else p, learned, params
+    )
+
+
 def solve(
     loss: Callable,
     params: SubunitParams,
