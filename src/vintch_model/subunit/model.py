@@ -25,6 +25,28 @@ from .basis import BasisNonlinearity
 from .params import SubunitParams
 
 
+class NoNormalization(eqx.Module):
+    """Kernel used as it is (the original Vintch et al. 2015 fit)."""
+
+    def __call__(
+        self, kernel: PyTree[Float[Array, "lags k_rows k_cols"]]
+    ) -> PyTree[Float[Array, "lags k_rows k_cols"]]:
+        return kernel
+
+
+class L2Normalization(eqx.Module):
+    """Each channel's kernel divided by its L2 norm, so only its shape is a parameter.
+
+    ``params.kernel`` stays the raw parameter; the normalized kernel exists only inside
+    the forward pass.
+    """
+
+    def __call__(
+        self, kernel: PyTree[Float[Array, "lags k_rows k_cols"]]
+    ) -> PyTree[Float[Array, "lags k_rows k_cols"]]:
+        return jax.tree.map(lambda k: k / jnp.linalg.norm(k), kernel)
+
+
 class Convolution(eqx.Module):
     """Kernel applied at every spatial position (cross-correlation, no kernel flip).
 
@@ -106,6 +128,7 @@ class SubunitModel(eqx.Module):
     output_nonlinearity: Callable[
         [PyTree[Float[Array, "n_coef"]], Float[Array, " time"]], Float[Array, " time"]
     ] = Identity()
+    kernel_normalization: NoNormalization | L2Normalization = NoNormalization()
 
     def __call__(
         self,
@@ -113,7 +136,7 @@ class SubunitModel(eqx.Module):
         stimulus: Float[Array, "time lags pixel_rows pixel_cols"],
         bounds: PyTree[Float[Array, "2"]],
     ) -> Float[Array, " time"]:
-        pre_activations = self.convolution(params.kernel, stimulus)
+        pre_activations = self.convolution(self.kernel_normalization(params.kernel), stimulus)
         activations = self.channel_nonlinearity(params.coef, pre_activations, bounds)
         pooled = self.pooling(params.pooling_weights, activations)
         reduced = self.reduction(params.offset, pooled)

@@ -1,6 +1,7 @@
 """Components of vintch_model.subunit (nonlinearity, convolution, pooling) and the
 model that composes them."""
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -8,6 +9,8 @@ import pytest
 
 from vintch_model.subunit import (
     Convolution,
+    L2Normalization,
+    NoNormalization,
     Pooling,
     SumAndOffset,
     SubunitModel,
@@ -207,3 +210,19 @@ def test_end_to_end_stages_match_model(dtype, wrap):
     model = SubunitModel(convolution=conv, channel_nonlinearity=tent_nl, pooling=pooling, reduction=reduce)
     result_model = wrap(model)(params, stimulus, bounds=tent_bounds)
     np.testing.assert_allclose(result_model, result)
+
+
+@pytest.mark.parametrize("random_params", [dict(seed=10, names=("excitatory", "suppressive"))], indirect=True)
+def test_l2_normalization(x64, random_params):
+    """Normalized kernels have unit norm; the model ignores the raw kernel's scale."""
+    names = ("excitatory", "suppressive")
+    params = random_params
+    normalized = L2Normalization()(params.kernel)
+    for n in names:
+        np.testing.assert_allclose(jnp.linalg.norm(normalized[n]), 1.0, rtol=1e-12)
+
+    model = SubunitModel(Convolution(), tents(16), Pooling(), ReduceAndOffset(), kernel_normalization=L2Normalization())
+    stimulus = jax.random.normal(jax.random.PRNGKey(10), shape=(4, 8, 16, 16))
+    bounds = {n: jnp.array([-3.0, 3.0]) for n in names}
+    scaled = eqx.tree_at(lambda p: p.kernel, params, {n: 7.0 * params.kernel[n] for n in names})
+    np.testing.assert_allclose(model(scaled, stimulus, bounds), model(params, stimulus, bounds), rtol=1e-12)
