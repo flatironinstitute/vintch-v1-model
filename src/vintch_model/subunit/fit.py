@@ -4,9 +4,74 @@ Functions prefixed ``replica_`` belong to the original fit of Vintch et al. (201
 and reproduce its choices; the others are the general fit.
 """
 
+from typing import Any, Callable
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
+from nemos.regularizer import Regularizer
+from nemos.solvers import get_solver
+
+from .params import SubunitParams
+
+
+def solve(
+    loss: Callable,
+    params: SubunitParams,
+    fix_params: SubunitParams,
+    regularizer: Regularizer,
+    strength: Any,
+    *args,
+    solver_name: str | None = None,
+    **solver_kwargs,
+) -> SubunitParams:
+    """Solve for the parameters that are ``None`` in ``fix_params``.
+
+    ``fix_params`` follows the NeMoS convention and mirrors ``params`` down to the leaves:
+    an array leaf holds that parameter at the given value, a ``None`` leaf marks it as
+    learned. The solver sees only the learned leaves; the loss sees them combined with
+    the fixed ones.
+
+    Parameters
+    ----------
+    loss :
+        Unregularized loss, called as ``loss(params, *args)``.
+    params :
+        Starting values of all parameters (the fixed leaves are ignored).
+    fix_params :
+        Which parameters are held fixed, and at what value.
+    regularizer, strength :
+        Penalty on the learned parameters, as for any NeMoS solver.
+    *args :
+        Passed to ``loss`` after the parameters.
+    solver_name :
+        A NeMoS solver name (e.g. ``"Newton"``, ``"LBFGS"``). Defaults to the
+        regularizer's default solver; the regularizer checks that it is allowed.
+    **solver_kwargs :
+        Passed to the solver.
+
+    Returns
+    -------
+    :
+        All parameters: the solved ones combined with the fixed ones.
+    """
+    learned = jax.tree.map(lambda x: x is None, fix_params, is_leaf=lambda x: x is None)
+    active, frozen = eqx.partition(eqx.combine(fix_params, params), learned)
+
+    def active_loss(p, *a):
+        return loss(eqx.combine(p, frozen), *a)
+
+    if solver_name is None:
+        solver_name = regularizer.default_solver
+
+    regularizer.check_solver(solver_name)
+    solver_cls = get_solver(solver_name).implementation
+    solver = solver_cls(
+        active_loss, regularizer, strength, has_aux=False, init_params=active, **solver_kwargs
+    )
+    active, _, _ = solver.run(active, *args)
+    return eqx.combine(active, frozen)
 
 
 def replica_quantile_bounds(
