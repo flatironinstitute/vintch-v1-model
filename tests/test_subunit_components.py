@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from vintch_model.subunit import Convolution, Pooling, SubunitModel, SubunitParams, tents
+from vintch_model.subunit import Convolution, L2Normalization, NoNormalization, Pooling, SubunitModel, SubunitParams, tents
 
 # Tents with bounds (-3, 3) and 4 nodes: nodes at -3, -1, 1, 3.
 BOUNDS = jnp.array([-3.0, 3.0])
@@ -86,7 +86,7 @@ def test_model_equals_composed_stages(x64, random_params, jit):
     params = random_params(rng, names)
     stimulus = rng.standard_normal((4, 8, 16, 16))
     bounds = {n: jnp.array([-20.0, 20.0]) for n in names}          # pre-activations fall inside and outside
-    model = SubunitModel(Convolution(), tents(16), Pooling())
+    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
     call = eqx.filter_jit(model) if jit else model
     out = call(params, jnp.asarray(stimulus), bounds)
 
@@ -107,3 +107,19 @@ def test_regularizable_subtrees_are_pooling_and_coef(random_params):
     selected = [where(params) for where in SubunitParams.regularizable_subtrees()]
     assert selected[0] is params.pooling_weights
     assert selected[1] is params.coef
+
+
+def test_l2_normalization(x64, random_params):
+    """Normalized kernels have unit norm; the model ignores the raw kernel's scale."""
+    rng = np.random.default_rng(10)
+    names = ("excitatory", "suppressive")
+    params = random_params(rng, names)
+    normalized = L2Normalization()(params.kernel)
+    for n in names:
+        np.testing.assert_allclose(jnp.linalg.norm(normalized[n]), 1.0, rtol=1e-12)
+
+    model = SubunitModel(L2Normalization(), Convolution(), tents(16), Pooling())
+    stimulus = jnp.asarray(rng.standard_normal((4, 8, 16, 16)))
+    bounds = {n: jnp.array([-3.0, 3.0]) for n in names}
+    scaled = eqx.tree_at(lambda p: p.kernel, params, {n: 7.0 * params.kernel[n] for n in names})
+    np.testing.assert_allclose(model(scaled, stimulus, bounds), model(params, stimulus, bounds), rtol=1e-12)
