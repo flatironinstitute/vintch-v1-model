@@ -14,15 +14,6 @@ BOUNDS = jnp.array([-3.0, 3.0])
 COEF = jnp.array([-1.0, 0.0, 2.0, 5.0])
 
 
-@pytest.fixture
-def x64():
-    """Run a test in float64, restoring the global setting afterwards."""
-    previous = jax.config.jax_enable_x64
-    jax.config.update("jax_enable_x64", True)
-    yield
-    jax.config.update("jax_enable_x64", previous)
-
-
 @pytest.mark.parametrize("jit", [False, True])
 def test_tents_interpolate_between_nodes(x64, jit):
     nonlinearity = tents(4)
@@ -87,17 +78,8 @@ def test_pooling_equals_weighted_sum(x64):
         np.testing.assert_allclose(pooled[name], expected, atol=1e-10)
 
 
-def random_params(rng, names, n_basis=16):
-    return SubunitParams(
-        kernel={n: jnp.asarray(rng.standard_normal((8, 8, 8))) for n in names},
-        coef={n: jnp.asarray(rng.standard_normal(n_basis)) for n in names},
-        pooling_weights={n: jnp.asarray(rng.standard_normal((9, 9))) for n in names},
-        offset=jnp.asarray(0.7),
-    )
-
-
 @pytest.mark.parametrize("jit", [False, True])
-def test_model_equals_composed_stages(x64, jit):
+def test_model_equals_composed_stages(x64, random_params, jit):
     """offset + sum over channels of pool(clamped tents(patch sums)), computed independently."""
     rng = np.random.default_rng(3)
     names = ("excitatory", "suppressive")
@@ -120,7 +102,7 @@ def test_model_equals_composed_stages(x64, jit):
     np.testing.assert_allclose(out, expected, atol=1e-9)
 
 
-def test_regularizable_subtrees_are_pooling_and_coef():
+def test_regularizable_subtrees_are_pooling_and_coef(random_params):
     params = random_params(np.random.default_rng(4), ("excitatory",))
     selected = [where(params) for where in SubunitParams.regularizable_subtrees()]
     assert selected[0] is params.pooling_weights
