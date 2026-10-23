@@ -52,7 +52,7 @@ def block_solver(
         Parameters with the structure of the ones to be solved.
     solver_name :
         A NeMoS solver name (e.g. ``"Newton"``, ``"LBFGS"``). Defaults to the
-        regularizer's default solver; the regularizer checks that it is allowed.
+        regularizer's default solver.
     **solver_kwargs :
         Passed to the solver.
     """
@@ -63,7 +63,6 @@ def block_solver(
 
     if solver_name is None:
         solver_name = regularizer.default_solver
-    regularizer.check_solver(solver_name)
     solver_cls = get_solver(solver_name).implementation
     return solver_cls(
         active_loss, regularizer, strength, has_aux=False, init_params=active, **solver_kwargs
@@ -104,6 +103,8 @@ def replica_fit(
     n_inner: int = 10,
     max_iter: int = 100,
     tol: float = 1e-8,
+    kernel_solver_name: str = "LBFGS",
+    kernel_solver_kwargs: dict | None = None,
     verbose: bool = False,
 ) -> tuple[SubunitParams, PyTree[Float[Array, "2"]], Float[Array, " max_iter"]]:
     """Block coordinate descent of the original fit (Vintch et al., 2015).
@@ -133,6 +134,10 @@ def replica_fit(
         Stop when the relative decrease of the penalized loss over an iteration is below
         ``tol``. The re-placed bounds change the objective, so the decrease is measured
         across whole iterations only.
+    kernel_solver_name, kernel_solver_kwargs :
+        Solver of the kernel block (any registered NeMoS name) and its options, e.g.
+        ``{"maxiter": 50}``. The kernel need not be solved to full precision every
+        iteration: the next iteration starts from it again.
     verbose :
         Print the penalized loss after each iteration (from inside the compiled loop).
 
@@ -150,7 +155,7 @@ def replica_fit(
                                DifferencePenalty(2), coef_strength, params, solver_name="Newton")
     kernel_loss = Loss(model, observation_model)
     kernel_solver = block_solver(kernel_loss, KERNEL_BLOCK, UnRegularized(), None, params,
-                                 solver_name="LBFGS")
+                                 solver_name=kernel_solver_name, **(kernel_solver_kwargs or {}))
     pooling_penalty = Ridge().penalty_fn(params, pooling_strength)
     tent_penalty = DifferencePenalty(2).penalty_fn(params, coef_strength)
 
