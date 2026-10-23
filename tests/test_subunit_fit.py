@@ -13,6 +13,7 @@ from vintch_model.subunit import (
     Loss,
     NoNormalization,
     Pooling,
+    ReduceAndOffset,
     SubunitModel,
     SubunitParams,
     tents,
@@ -51,7 +52,7 @@ def test_pooling_block_matches_closed_form(x64, random_params, solver_name, solv
     """Pooling weights and offset solved with kernel and coef fixed = penalized least squares."""
     rng = np.random.default_rng(13)
     params = random_params(rng, NAMES)
-    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
+    model = SubunitModel(Convolution(), tents(16), Pooling(), ReduceAndOffset())
     loss = Loss(model, nmo.observation_models.GaussianObservations())
     stimulus = jnp.asarray(rng.standard_normal((300, 8, 16, 16)))
     y = jnp.asarray(rng.standard_normal(300))
