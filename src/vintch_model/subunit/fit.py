@@ -104,6 +104,7 @@ def replica_fit(
     n_inner: int = 10,
     max_iter: int = 100,
     tol: float = 1e-8,
+    verbose: bool = False,
 ) -> tuple[SubunitParams, PyTree[Float[Array, "2"]], Float[Array, " max_iter"]]:
     """Block coordinate descent of the original fit (Vintch et al., 2015).
 
@@ -132,6 +133,8 @@ def replica_fit(
         Stop when the relative decrease of the penalized loss over an iteration is below
         ``tol``. The re-placed bounds change the objective, so the decrease is measured
         across whole iterations only.
+    verbose :
+        Print the penalized loss after each iteration (from inside the compiled loop).
 
     Returns
     -------
@@ -172,6 +175,8 @@ def replica_fit(
         loss = penalized_loss(params, bounds)
         previous = losses[i - 1]
         converged = (i > 0) & ((previous - loss) <= tol * jnp.abs(previous))
+        if verbose:
+            jax.debug.print("iteration {i}: penalized loss {loss}", i=i + 1, loss=loss)
         return i + 1, params, bounds, losses.at[i].set(loss), converged
 
     def keep_going(carry):
