@@ -80,8 +80,48 @@ def test_pooling_block_matches_closed_form(x64, random_params, solver_name, solv
         np.testing.assert_array_equal(solved.coef[n], params.coef[n])
 
 
+def solve_tent_block(random_params, lam, ratio):
+    """Solve coef and offset with kernel and pooling fixed; return what the checks need.
+
+    The block is linear: prediction = X @ beta, with beta = (offset, coef per channel)
+    and X = [1, F], F the tent features pooled with the fixed pooling weights.
+    """
+    rng = np.random.default_rng(15)
+    params = random_params(rng, NAMES)
+    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
+    loss = LossFromPreActivations(model, nmo.observation_models.GaussianObservations())
+    stimulus = jnp.asarray(rng.standard_normal((300, 8, 16, 16)))
+    y = np.asarray(rng.standard_normal(300))
+
+    # the kernel is fixed, so the pre-activations and the bounds are computed once
+    pre_activations = model.pre_activations(params, stimulus)
+    bounds = replica_quantile_bounds(pre_activations)
+    learned = SubunitParams(kernel=False, coef=True, pooling_weights=False, offset=True)
+    solved = solve(loss, params, fix_params_from(params, learned), DifferencePenalty(2),
+                   (lam, ratio), pre_activations, jnp.asarray(y), bounds)
+
+    features = model.nonlinearity.features(pre_activations, bounds)
+    F = np.concatenate([np.einsum("tijl,ij->tl", np.asarray(features[n]),
+                                  np.asarray(params.pooling_weights[n])) for n in NAMES], axis=1)
+    X = np.column_stack([np.ones(300), F])
+    D = np.diff(np.eye(16), n=2, axis=0)
+    P = np.zeros((33, 33))
+    P[1:17, 1:17] = P[17:, 17:] = (1 - ratio) * D.T @ D + ratio * np.eye(16)
+    normal_matrix = 2 * X.T @ X / 300 + lam * P
+    normal_rhs = 2 * X.T @ y / 300
+
+    def objective(beta):
+        return np.mean((y - X @ beta) ** 2) + 0.5 * lam * beta @ P @ beta
+
+    def as_beta(p):
+        return np.concatenate([[float(p.offset)]] + [np.asarray(p.coef[n]) for n in NAMES])
+
+    prediction = np.asarray(model.output(solved, model.activations(solved, pre_activations, bounds)))
+    return params, solved, X, normal_matrix, normal_rhs, objective, as_beta, prediction
+
+
 def test_tent_block(x64, random_params):
-    """coef and offset solved with kernel and pooling fixed.
+    """coef and offset solved with kernel and pooling fixed, no ridge term.
 
     With clamped tents the basis sums to 1, so adding a constant to a channel's coef and
     subtracting it (times the channel's total pooling weight) from the offset changes
@@ -89,41 +129,11 @@ def test_tent_block(x64, random_params):
     line. The predictions and the objective value are unique, and Newton should not move
     along that line.
     """
-    rng = np.random.default_rng(15)
-    params = random_params(rng, NAMES)
-    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
-    loss = LossFromPreActivations(model, nmo.observation_models.GaussianObservations())
-    stimulus = jnp.asarray(rng.standard_normal((300, 8, 16, 16)))
-    y = jnp.asarray(rng.standard_normal(300))
-    lam = 0.5
-
-    # the kernel is fixed, so the pre-activations and the bounds are computed once
-    pre_activations = model.pre_activations(params, stimulus)
-    bounds = replica_quantile_bounds(pre_activations)
-    learned = SubunitParams(kernel=False, coef=True, pooling_weights=False, offset=True)
-    solved = solve(loss, params, fix_params_from(params, learned),
-                   DifferencePenalty(2), (lam, 0.0),
-                   pre_activations, y, bounds)
-
-    # the block is linear: prediction = X @ beta, beta = (offset, coef per channel)
-    features = model.nonlinearity.features(pre_activations, bounds)
-    F = np.concatenate([np.einsum("tijl,ij->tl", np.asarray(features[n]),
-                                  np.asarray(params.pooling_weights[n])) for n in NAMES], axis=1)
-    X = np.column_stack([np.ones(300), F])
-    D = np.diff(np.eye(16), n=2, axis=0)
-    P = np.zeros((33, 33))
-    P[1:17, 1:17] = P[17:, 17:] = D.T @ D
-
-    def objective(beta):
-        return np.mean((np.asarray(y) - X @ beta) ** 2) + 0.5 * lam * beta @ P @ beta
-
-    def as_beta(p):
-        return np.concatenate([[float(p.offset)]] + [np.asarray(p.coef[n]) for n in NAMES])
-
-    beta_direct = np.linalg.pinv(2 * X.T @ X / 300 + lam * P) @ (2 * X.T @ np.asarray(y) / 300)
+    params, solved, X, A, b, objective, as_beta, prediction = solve_tent_block(
+        random_params, lam=0.5, ratio=0.0)
+    beta_direct = np.linalg.pinv(A) @ b
     beta_solved, beta_start = as_beta(solved), as_beta(params)
 
-    prediction = model.output(solved, model.activations(solved, pre_activations, bounds))
     np.testing.assert_allclose(prediction, X @ beta_direct, rtol=1e-6, atol=1e-8)
     np.testing.assert_allclose(objective(beta_solved), objective(beta_direct), rtol=1e-10)
 
@@ -140,3 +150,13 @@ def test_tent_block(x64, random_params):
     for n in NAMES:
         np.testing.assert_array_equal(solved.kernel[n], params.kernel[n])
         np.testing.assert_array_equal(solved.pooling_weights[n], params.pooling_weights[n])
+
+
+def test_tent_block_with_ridge(x64, random_params):
+    """With a ridge ratio r > 0 the minimizer is unique: Newton gives the parameters
+    of the direct solve, not only its predictions."""
+    params, solved, X, A, b, objective, as_beta, prediction = solve_tent_block(
+        random_params, lam=0.5, ratio=1e-3)
+    beta_direct = np.linalg.solve(A, b)
+    np.testing.assert_allclose(as_beta(solved), beta_direct, rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose(prediction, X @ beta_direct, rtol=1e-6, atol=1e-8)
