@@ -10,88 +10,70 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
-from nemos.regularizer import Regularizer
+from nemos.observation_models import Observations
+from nemos.regularizer import Regularizer, Ridge, UnRegularized
 from nemos.solvers import get_solver
 
+from .loss import Loss, LossFromActivations, LossFromPreActivations
+from .model import SubunitModel
 from .params import SubunitParams
+from .regularizer import DifferencePenalty
+
+POOLING_BLOCK = SubunitParams(kernel=False, coef=False, pooling_weights=True, offset=True)
+TENT_BLOCK = SubunitParams(kernel=False, coef=True, pooling_weights=False, offset=True)
+KERNEL_BLOCK = SubunitParams(kernel=True, coef=False, pooling_weights=False, offset=False)
 
 
-def fix_params_from(params: SubunitParams, learned: SubunitParams) -> SubunitParams:
-    """NeMoS-style ``fix_params`` that holds every parameter not learned at its current value.
-
-    Parameters
-    ----------
-    params :
-        Current values of all parameters.
-    learned :
-        Prefix tree of booleans marking what is learned, e.g.
-        ``SubunitParams(kernel=False, coef=False, pooling_weights=True, offset=True)``.
-
-    Returns
-    -------
-    :
-        ``params`` with ``None`` at every learned leaf.
-    """
-    return jax.tree.map(
-        lambda flag, p: jax.tree.map(lambda _: None, p) if flag else p, learned, params
-    )
-
-
-def solve(
+def block_solver(
     loss: Callable,
-    params: SubunitParams,
-    fix_params: SubunitParams,
+    learned: SubunitParams,
     regularizer: Regularizer,
     strength: Any,
-    *args,
+    init_params: SubunitParams,
     solver_name: str | None = None,
     **solver_kwargs,
-) -> SubunitParams:
-    """Solve for the parameters that are ``None`` in ``fix_params``.
+):
+    """NeMoS solver for the learned parameters of a block, built once and reused.
 
-    ``fix_params`` follows the NeMoS convention and mirrors ``params`` down to the leaves:
-    an array leaf holds that parameter at the given value, a ``None`` leaf marks it as
-    learned. The solver sees only the learned leaves; the loss sees them combined with
-    the fixed ones.
+    The fixed parameters are not captured: they are the first argument after the
+    learned ones, so the same solver (and its compiled code) serves every call of
+    ``run_block``.
 
     Parameters
     ----------
     loss :
         Unregularized loss, called as ``loss(params, *args)``.
-    params :
-        Starting values of all parameters (the fixed leaves are ignored).
-    fix_params :
-        Which parameters are held fixed, and at what value.
+    learned :
+        Prefix tree of booleans marking what is learned, e.g.
+        ``SubunitParams(kernel=False, coef=False, pooling_weights=True, offset=True)``.
     regularizer, strength :
         Penalty on the learned parameters, as for any NeMoS solver.
-    *args :
-        Passed to ``loss`` after the parameters.
+    init_params :
+        Parameters with the structure of the ones to be solved.
     solver_name :
         A NeMoS solver name (e.g. ``"Newton"``, ``"LBFGS"``). Defaults to the
         regularizer's default solver; the regularizer checks that it is allowed.
     **solver_kwargs :
         Passed to the solver.
-
-    Returns
-    -------
-    :
-        All parameters: the solved ones combined with the fixed ones.
     """
-    learned = jax.tree.map(lambda x: x is None, fix_params, is_leaf=lambda x: x is None)
-    active, frozen = eqx.partition(eqx.combine(fix_params, params), learned)
+    active, _ = eqx.partition(init_params, learned)
 
-    def active_loss(p, *a):
-        return loss(eqx.combine(p, frozen), *a)
+    def active_loss(p, frozen, *args):
+        return loss(eqx.combine(p, frozen), *args)
 
     if solver_name is None:
         solver_name = regularizer.default_solver
-
     regularizer.check_solver(solver_name)
     solver_cls = get_solver(solver_name).implementation
-    solver = solver_cls(
+    return solver_cls(
         active_loss, regularizer, strength, has_aux=False, init_params=active, **solver_kwargs
     )
-    active, _, _ = solver.run(active, *args)
+
+
+def run_block(solver, learned: SubunitParams, params: SubunitParams, *args) -> SubunitParams:
+    """Solve the learned parameters with ``solver``, holding the others at their values in ``params``."""
+    active, frozen = eqx.partition(params, learned)
+    active, _, _ = solver.run(active, frozen, *args)
     return eqx.combine(active, frozen)
 
 
@@ -108,3 +90,96 @@ def replica_quantile_bounds(
     # 0-based index round(q * n) - 1, "nearest" takes index round(q * (n - 1)). The two
     # can pick neighboring order statistics; the difference in the bounds is negligible.
     return jax.tree.map(lambda z: jnp.quantile(z, q, method="nearest"), pre_activations)
+
+
+def replica_fit(
+    model: SubunitModel,
+    observation_model: Observations,
+    params: SubunitParams,
+    bounds: PyTree[Float[Array, "2"]],
+    stimulus: Float[Array, "time lags rows cols"],
+    y: Float[Array, " time"],
+    pooling_strength: float,
+    coef_strength: tuple[float, float],
+    n_inner: int = 10,
+    max_iter: int = 100,
+    tol: float = 1e-8,
+) -> tuple[SubunitParams, PyTree[Float[Array, "2"]], Float[Array, " max_iter"]]:
+    """Block coordinate descent of the original fit (Vintch et al., 2015).
+
+    Each iteration runs ``n_inner`` rounds of (pooling block, bounds re-placed at the
+    1/32 and 31/32 quantiles, tent block), then one kernel block, as the original does.
+    The model and objective are the original's; the block solves use NeMoS solvers
+    (Newton for pooling and tents, L-BFGS for the kernel) instead of its heuristics.
+
+    Parameters
+    ----------
+    model, observation_model :
+        The subunit model and the NeMoS observation model of the loss.
+    params, bounds :
+        Starting parameters and tent bounds (initialization is a separate step).
+    stimulus, y :
+        Training data.
+    pooling_strength :
+        ``Ridge`` strength on ``pooling_weights``.
+    coef_strength :
+        ``DifferencePenalty`` strength ``(alpha, r)`` on ``coef``.
+    n_inner :
+        Rounds of pooling and tent blocks per iteration (10 in the original).
+    max_iter :
+        Maximum number of iterations.
+    tol :
+        Stop when the relative decrease of the penalized loss over an iteration is below
+        ``tol``. The re-placed bounds change the objective, so the decrease is measured
+        across whole iterations only.
+
+    Returns
+    -------
+    params, bounds :
+        Fitted parameters and the bounds they were fitted with.
+    losses :
+        Penalized loss after each iteration; ``nan`` for iterations not run.
+    """
+    # solvers and penalties are built once, outside the compiled loop
+    pooling_solver = block_solver(LossFromActivations(model, observation_model), POOLING_BLOCK,
+                                  Ridge(), pooling_strength, params, solver_name="Newton")
+    tent_solver = block_solver(LossFromPreActivations(model, observation_model), TENT_BLOCK,
+                               DifferencePenalty(2), coef_strength, params, solver_name="Newton")
+    kernel_loss = Loss(model, observation_model)
+    kernel_solver = block_solver(kernel_loss, KERNEL_BLOCK, UnRegularized(), None, params,
+                                 solver_name="LBFGS")
+    pooling_penalty = Ridge().penalty_fn(params, pooling_strength)
+    tent_penalty = DifferencePenalty(2).penalty_fn(params, coef_strength)
+
+    def penalized_loss(params, bounds):
+        return kernel_loss(params, stimulus, y, bounds) + pooling_penalty(params) + tent_penalty(params)
+
+    def inner_round(_, carry):
+        params, bounds, pre_activations = carry
+        activations = model.activations(params, pre_activations, bounds)
+        params = run_block(pooling_solver, POOLING_BLOCK, params, activations, y)
+        bounds = replica_quantile_bounds(pre_activations)
+        params = run_block(tent_solver, TENT_BLOCK, params, pre_activations, y, bounds)
+        return params, bounds, pre_activations
+
+    def iteration(carry):
+        i, params, bounds, losses, _ = carry
+        pre_activations = model.pre_activations(params, stimulus)
+        params, bounds, _ = jax.lax.fori_loop(
+            0, n_inner, inner_round, (params, bounds, pre_activations)
+        )
+        params = run_block(kernel_solver, KERNEL_BLOCK, params, stimulus, y, bounds)
+        loss = penalized_loss(params, bounds)
+        previous = losses[i - 1]
+        converged = (i > 0) & ((previous - loss) <= tol * jnp.abs(previous))
+        return i + 1, params, bounds, losses.at[i].set(loss), converged
+
+    def keep_going(carry):
+        i, _, _, _, converged = carry
+        return (i < max_iter) & ~converged
+
+    losses = jnp.full(max_iter, jnp.nan)
+    _, params, bounds, losses, _ = jax.lax.while_loop(
+        keep_going, iteration, (0, params, bounds, losses, False)
+    )
+    return params, bounds, losses

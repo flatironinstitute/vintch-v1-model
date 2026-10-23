@@ -18,13 +18,13 @@ def x64():
 
 @pytest.fixture
 def random_params():
-    """Factory for SubunitParams with 8x8x8 kernels, 9x9 pooling maps and offset 0.7."""
+    """Factory for SubunitParams with offset 0.7; by default 8x8x8 kernels and 9x9 pooling maps."""
 
-    def make(rng, names, n_basis=16):
+    def make(rng, names, n_basis=16, kernel_shape=(8, 8, 8), pool_shape=(9, 9)):
         return SubunitParams(
-            kernel={n: jnp.asarray(rng.standard_normal((8, 8, 8))) for n in names},
+            kernel={n: jnp.asarray(rng.standard_normal(kernel_shape)) for n in names},
             coef={n: jnp.asarray(rng.standard_normal(n_basis)) for n in names},
-            pooling_weights={n: jnp.asarray(rng.standard_normal((9, 9))) for n in names},
+            pooling_weights={n: jnp.asarray(rng.standard_normal(pool_shape)) for n in names},
             offset=jnp.asarray(0.7),
         )
 
