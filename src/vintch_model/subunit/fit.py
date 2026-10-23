@@ -131,9 +131,10 @@ def replica_fit(
     max_iter :
         Maximum number of iterations.
     tol :
-        Stop when the relative decrease of the penalized loss over an iteration is below
-        ``tol``. The re-placed bounds change the objective, so the decrease is measured
-        across whole iterations only.
+        Stop when the relative change of the penalized loss over an iteration,
+        ``|previous - loss| / |previous|``, is below ``tol``; an increase larger than that
+        does not stop the fit. The re-placed bounds change the objective, so the change is
+        measured across whole iterations only.
     kernel_solver_name, kernel_solver_kwargs :
         Solver of the kernel block (any registered NeMoS name) and its options, e.g.
         ``{"maxiter": 50}``. The kernel need not be solved to full precision every
@@ -179,7 +180,7 @@ def replica_fit(
         params = run_block(kernel_solver, KERNEL_BLOCK, params, stimulus, y, bounds)
         loss = penalized_loss(params, bounds)
         previous = losses[i - 1]
-        converged = (i > 0) & ((previous - loss) <= tol * jnp.abs(previous))
+        converged = (i > 0) & (jnp.abs(previous - loss) <= tol * jnp.abs(previous))
         if verbose:
             jax.debug.print("iteration {i}: penalized loss {loss}", i=i + 1, loss=loss)
         return i + 1, params, bounds, losses.at[i].set(loss), converged
