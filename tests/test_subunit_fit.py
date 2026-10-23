@@ -10,7 +10,7 @@ from nemos.regularizer import Ridge
 
 from vintch_model.subunit import (
     Convolution,
-    Loss,
+    LossFromActivations,
     NoNormalization,
     Pooling,
     SubunitModel,
@@ -52,19 +52,20 @@ def test_pooling_block_matches_closed_form(x64, random_params, solver_name, solv
     rng = np.random.default_rng(13)
     params = random_params(rng, NAMES)
     model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
-    loss = Loss(model, nmo.observation_models.GaussianObservations())
+    loss = LossFromActivations(model, nmo.observation_models.GaussianObservations())
     stimulus = jnp.asarray(rng.standard_normal((300, 8, 16, 16)))
     y = jnp.asarray(rng.standard_normal(300))
     bounds = {n: jnp.array([-20.0, 20.0]) for n in NAMES}
     lam = 0.3
 
+    # kernel and coef are fixed, so the activations are computed once
+    activations = model.activations(params, model.pre_activations(params, stimulus), bounds)
     learned = SubunitParams(kernel=False, coef=False, pooling_weights=True, offset=True)
     fix_params = fix_params_from(params, learned)
     solved = solve(loss, params, fix_params, CompositePenalty((Ridge(), DifferencePenalty(2))),
-                   (lam, 0.5), stimulus, y, bounds, solver_name=solver_name, **solver_kwargs)
+                   (lam, 0.5), activations, y, solver_name=solver_name, **solver_kwargs)
 
     # closed form: minimize mean((y - b - A w)^2) + 0.5 * lam * ||w||^2, b unpenalized
-    activations = model.nonlinearity(params.coef, model.convolution(params.kernel, stimulus), bounds)
     A = np.concatenate([np.asarray(activations[n]).reshape(300, -1) for n in NAMES], axis=1)
     X = np.column_stack([np.ones(300), A])
     P = np.diag([0.0] + [1.0] * A.shape[1])
