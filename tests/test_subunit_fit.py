@@ -6,10 +6,12 @@ import jax.numpy as jnp
 import nemos as nmo
 import numpy as np
 import pytest
-from nemos.regularizer import Ridge
+from nemos.regularizer import Ridge, UnRegularized
 
 from vintch_model.subunit import (
     Convolution,
+    L2Normalization,
+    Loss,
     LossFromActivations,
     LossFromPreActivations,
     NoNormalization,
@@ -18,7 +20,7 @@ from vintch_model.subunit import (
     SubunitParams,
     tents,
 )
-from vintch_model.subunit.fit import fix_params_from, replica_quantile_bounds, solve
+from vintch_model.subunit.fit import block_solver, replica_fit, replica_quantile_bounds, run_block
 from vintch_model.subunit.regularizer import DifferencePenalty
 
 NAMES = ("excitatory", "suppressive")
@@ -62,9 +64,9 @@ def test_pooling_block_matches_closed_form(x64, random_params, solver_name, solv
     # kernel and coef are fixed, so the activations are computed once
     activations = model.activations(params, model.pre_activations(params, stimulus), bounds)
     learned = SubunitParams(kernel=False, coef=False, pooling_weights=True, offset=True)
-    fix_params = fix_params_from(params, learned)
-    solved = solve(loss, params, fix_params, Ridge(), lam, activations, y,
-                   solver_name=solver_name, **solver_kwargs)
+    solver = block_solver(loss, learned, Ridge(), lam, params,
+                          solver_name=solver_name, **solver_kwargs)
+    solved = run_block(solver, learned, params, activations, y)
 
     # closed form: minimize mean((y - b - A w)^2) + 0.5 * lam * ||w||^2, b unpenalized
     A = np.concatenate([np.asarray(activations[n]).reshape(300, -1) for n in NAMES], axis=1)
@@ -97,8 +99,8 @@ def solve_tent_block(random_params, lam, ratio):
     pre_activations = model.pre_activations(params, stimulus)
     bounds = replica_quantile_bounds(pre_activations)
     learned = SubunitParams(kernel=False, coef=True, pooling_weights=False, offset=True)
-    solved = solve(loss, params, fix_params_from(params, learned), DifferencePenalty(2),
-                   (lam, ratio), pre_activations, jnp.asarray(y), bounds)
+    solver = block_solver(loss, learned, DifferencePenalty(2), (lam, ratio), params)
+    solved = run_block(solver, learned, params, pre_activations, jnp.asarray(y), bounds)
 
     features = model.nonlinearity.features(pre_activations, bounds)
     F = np.concatenate([np.einsum("tijl,ij->tl", np.asarray(features[n]),
@@ -160,3 +162,71 @@ def test_tent_block_with_ridge(x64, random_params):
     beta_direct = np.linalg.solve(A, b)
     np.testing.assert_allclose(as_beta(solved), beta_direct, rtol=1e-6, atol=1e-8)
     np.testing.assert_allclose(prediction, X @ beta_direct, rtol=1e-6, atol=1e-8)
+
+
+def solve_kernel_block(random_params, normalization, start_scale=1.0):
+    """Recover the kernels of a known model from noise-free data, other parameters at truth.
+
+    Returns the true and solved parameters, and the loss at both.
+    """
+    rng = np.random.default_rng(16)
+    # small problem: 2 lags of 4x4 kernels on 8x8 frames, 5x5 positions, 64 unknowns
+    params_true = random_params(rng, NAMES, kernel_shape=(2, 4, 4), pool_shape=(5, 5))
+    model = SubunitModel(normalization, Convolution(), tents(16), Pooling())
+    loss = Loss(model, nmo.observation_models.GaussianObservations())
+    stimulus = jnp.asarray(rng.standard_normal((400, 2, 8, 8)))
+    bounds = replica_quantile_bounds(model.pre_activations(params_true, stimulus))
+    y = model(params_true, stimulus, bounds)
+
+    # start: each kernel scaled and perturbed by 10% of its own size
+    start_kernel = {n: start_scale * k + 0.1 * jnp.std(k) * jnp.asarray(rng.standard_normal(k.shape))
+                    for n, k in params_true.kernel.items()}
+    start = eqx.tree_at(lambda p: p.kernel, params_true, start_kernel)
+    learned = SubunitParams(kernel=True, coef=False, pooling_weights=False, offset=False)
+    solver = block_solver(loss, learned, UnRegularized(), None, start,
+                          solver_name="LBFGS", tol=1e-10, maxiter=5000)
+    solved = run_block(solver, learned, start, stimulus, y, bounds)
+    return params_true, solved, loss(solved, stimulus, y, bounds), float(jnp.var(y))
+
+
+def test_kernel_block_recovers_kernel(x64, random_params):
+    params_true, solved, final_loss, y_var = solve_kernel_block(random_params, NoNormalization())
+    for n in NAMES:
+        k_true, k_hat = np.asarray(params_true.kernel[n]), np.asarray(solved.kernel[n])
+        assert np.linalg.norm(k_hat - k_true) <= 1e-6 * np.linalg.norm(k_true)
+        np.testing.assert_array_equal(solved.coef[n], params_true.coef[n])
+        np.testing.assert_array_equal(solved.pooling_weights[n], params_true.pooling_weights[n])
+    assert final_loss <= 1e-12 * y_var
+
+
+def test_kernel_block_recovers_normalized_kernel(x64, random_params):
+    """With L2Normalization the raw kernel's scale is not identified: the start is three
+    times the true kernel, and only the normalized kernel is compared."""
+    params_true, solved, final_loss, y_var = solve_kernel_block(
+        random_params, L2Normalization(), start_scale=3.0)
+    normalize = L2Normalization()
+    k_true, k_hat = normalize(params_true.kernel), normalize(solved.kernel)
+    for n in NAMES:
+        assert np.linalg.norm(np.asarray(k_hat[n] - k_true[n])) <= 1e-6
+    assert final_loss <= 1e-12 * y_var
+
+
+def test_replica_fit_lowers_the_loss(x64, random_params):
+    """From perturbed kernels on noise-free data, the penalized loss decreases at every
+    iteration and ends at least 1000 times below its first value."""
+    rng = np.random.default_rng(17)
+    params_true = random_params(rng, NAMES, kernel_shape=(2, 4, 4), pool_shape=(5, 5))
+    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
+    stimulus = jnp.asarray(rng.standard_normal((400, 2, 8, 8)))
+    bounds = replica_quantile_bounds(model.pre_activations(params_true, stimulus))
+    y = model(params_true, stimulus, bounds)
+    start_kernel = {n: k + 0.1 * jnp.std(k) * jnp.asarray(rng.standard_normal(k.shape))
+                    for n, k in params_true.kernel.items()}
+    start = eqx.tree_at(lambda p: p.kernel, params_true, start_kernel)
+
+    _, _, losses = replica_fit(model, nmo.observation_models.GaussianObservations(), start,
+                               bounds, stimulus, y, 1e-6, (1e-6, 1e-3), n_inner=2, max_iter=30)
+    losses = np.asarray(losses)
+    losses = losses[~np.isnan(losses)]
+    assert np.all(np.diff(losses) <= 1e-6 * losses[:-1])
+    assert losses[-1] <= 1e-3 * losses[0]
