@@ -11,6 +11,7 @@ from nemos.regularizer import Ridge
 from vintch_model.subunit import (
     Convolution,
     LossFromActivations,
+    LossFromPreActivations,
     NoNormalization,
     Pooling,
     SubunitModel,
@@ -18,7 +19,7 @@ from vintch_model.subunit import (
     tents,
 )
 from vintch_model.subunit.fit import fix_params_from, replica_quantile_bounds, solve
-from vintch_model.subunit.regularizer import CompositePenalty, DifferencePenalty
+from vintch_model.subunit.regularizer import DifferencePenalty
 
 NAMES = ("excitatory", "suppressive")
 
@@ -33,12 +34,12 @@ def test_replica_quantile_bounds(x64):
         np.testing.assert_allclose(bounds[n], expected, rtol=0)
 
 
-def test_composite_penalty_on_active_tree(x64, random_params):
-    """With coef and kernel held fixed, only the ridge term on pooling_weights remains."""
+def test_ridge_on_pooling_block(x64, random_params):
+    """With coef and kernel held fixed (None), Ridge penalizes only pooling_weights."""
     params = random_params(np.random.default_rng(12), NAMES)
     active = eqx.tree_at(lambda p: (p.kernel, p.coef), params, ({n: None for n in NAMES},) * 2,
                          is_leaf=lambda x: x is None)
-    penalty = CompositePenalty((Ridge(), DifferencePenalty(2))).penalty_fn(active, (0.2, 0.5))(active)
+    penalty = Ridge().penalty_fn(active, 0.2)(active)
     expected = sum(0.5 * 0.2 * np.sum(np.asarray(w) ** 2) for w in params.pooling_weights.values())
     np.testing.assert_allclose(penalty, expected, rtol=1e-12)
 
@@ -62,8 +63,8 @@ def test_pooling_block_matches_closed_form(x64, random_params, solver_name, solv
     activations = model.activations(params, model.pre_activations(params, stimulus), bounds)
     learned = SubunitParams(kernel=False, coef=False, pooling_weights=True, offset=True)
     fix_params = fix_params_from(params, learned)
-    solved = solve(loss, params, fix_params, CompositePenalty((Ridge(), DifferencePenalty(2))),
-                   (lam, 0.5), activations, y, solver_name=solver_name, **solver_kwargs)
+    solved = solve(loss, params, fix_params, Ridge(), lam, activations, y,
+                   solver_name=solver_name, **solver_kwargs)
 
     # closed form: minimize mean((y - b - A w)^2) + 0.5 * lam * ||w||^2, b unpenalized
     A = np.concatenate([np.asarray(activations[n]).reshape(300, -1) for n in NAMES], axis=1)
@@ -77,3 +78,65 @@ def test_pooling_block_matches_closed_form(x64, random_params, solver_name, solv
     for n in NAMES:
         np.testing.assert_array_equal(solved.kernel[n], params.kernel[n])
         np.testing.assert_array_equal(solved.coef[n], params.coef[n])
+
+
+def test_tent_block(x64, random_params):
+    """coef and offset solved with kernel and pooling fixed.
+
+    With clamped tents the basis sums to 1, so adding a constant to a channel's coef and
+    subtracting it (times the channel's total pooling weight) from the offset changes
+    neither the predictions nor the second-difference penalty: the minimizers form a
+    line. The predictions and the objective value are unique, and Newton should not move
+    along that line.
+    """
+    rng = np.random.default_rng(15)
+    params = random_params(rng, NAMES)
+    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
+    loss = LossFromPreActivations(model, nmo.observation_models.GaussianObservations())
+    stimulus = jnp.asarray(rng.standard_normal((300, 8, 16, 16)))
+    y = jnp.asarray(rng.standard_normal(300))
+    lam = 0.5
+
+    # the kernel is fixed, so the pre-activations and the bounds are computed once
+    pre_activations = model.pre_activations(params, stimulus)
+    bounds = replica_quantile_bounds(pre_activations)
+    learned = SubunitParams(kernel=False, coef=True, pooling_weights=False, offset=True)
+    solved = solve(loss, params, fix_params_from(params, learned),
+                   DifferencePenalty(2), (lam, 0.0),
+                   pre_activations, y, bounds)
+
+    # the block is linear: prediction = X @ beta, beta = (offset, coef per channel)
+    features = model.nonlinearity.features(pre_activations, bounds)
+    F = np.concatenate([np.einsum("tijl,ij->tl", np.asarray(features[n]),
+                                  np.asarray(params.pooling_weights[n])) for n in NAMES], axis=1)
+    X = np.column_stack([np.ones(300), F])
+    D = np.diff(np.eye(16), n=2, axis=0)
+    P = np.zeros((33, 33))
+    P[1:17, 1:17] = P[17:, 17:] = D.T @ D
+
+    def objective(beta):
+        return np.mean((np.asarray(y) - X @ beta) ** 2) + 0.5 * lam * beta @ P @ beta
+
+    def as_beta(p):
+        return np.concatenate([[float(p.offset)]] + [np.asarray(p.coef[n]) for n in NAMES])
+
+    beta_direct = np.linalg.pinv(2 * X.T @ X / 300 + lam * P) @ (2 * X.T @ np.asarray(y) / 300)
+    beta_solved, beta_start = as_beta(solved), as_beta(params)
+
+    prediction = model.output(solved, model.activations(solved, pre_activations, bounds))
+    np.testing.assert_allclose(prediction, X @ beta_direct, rtol=1e-6, atol=1e-8)
+    np.testing.assert_allclose(objective(beta_solved), objective(beta_direct), rtol=1e-10)
+
+    # null directions: +1 on one channel's coef, -(its total pooling weight) on the offset
+    null = np.zeros((33, 2))
+    for c, n in enumerate(NAMES):
+        null[0, c] = -np.sum(np.asarray(params.pooling_weights[n]))
+        null[1 + 16 * c:17 + 16 * c, c] = 1.0
+    np.testing.assert_allclose(X @ null, 0.0, atol=1e-8)
+    step = beta_solved - beta_start
+    along_null = null @ np.linalg.lstsq(null, step, rcond=None)[0]
+    assert np.linalg.norm(along_null) <= 1e-6 * np.linalg.norm(step)
+
+    for n in NAMES:
+        np.testing.assert_array_equal(solved.kernel[n], params.kernel[n])
+        np.testing.assert_array_equal(solved.pooling_weights[n], params.pooling_weights[n])
