@@ -18,7 +18,6 @@ from typing import Any, Literal
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import nemos as nmo
 from jaxtyping import Array, Float, PyTree
 
 from .params import SubunitParams
@@ -49,9 +48,18 @@ class BasisNonlinearity(eqx.Module):
     ``bounds`` passed to each call: the bounds move during a fit, and the basis is a
     static field, so changing its bounds would trigger recompilation.
     """
-
+    # still needed to mark field as static
     basis: Any = eqx.field(static=True)
-    fill_strategy: Literal["clamp", "zero"] = eqx.field(static=True, default="clamp")
+    fill_strategy: Literal["clamp", "zero"] = eqx.field(static=True)
+
+    def __init__(self, basis, fill_strategy: Literal["zero", "clamp"] = "clamp"):
+        bounds = getattr(basis, "bounds", (0, 1))
+        if bounds != (0, 1):
+            raise ValueError("Misconfigured basis bounds. To work as a BasisNonlinearity, "
+                               f"a NeMoS basis must have bounds set to (0,1).\n"
+                               f"Provided bounds: {bounds}")
+        self.basis = basis
+        self.fill_strategy = fill_strategy
 
     def _features_leaf(
         self, pre_activations: Float[Array, "..."], bounds: Float[Array, "2"]
@@ -65,22 +73,12 @@ class BasisNonlinearity(eqx.Module):
             u = jnp.clip(u, 0.0, jnp.nextafter(jnp.ones((), u.dtype), 0))
         return self.basis.evaluate(u)
 
-    def features(
-        self, pre_activations: PyTree[Float[Array, "..."]], bounds: PyTree[Float[Array, "2"]]
-    ) -> PyTree[Float[Array, "... n_basis"]]:
-        """Basis functions evaluated at each pre-activation, per channel."""
-        return jax.tree.map(self._features_leaf, pre_activations, bounds)
-
     def __call__(
         self,
         coef: PyTree[Float[Array, " n_basis"]],
         pre_activations: PyTree[Float[Array, "..."]],
         bounds: PyTree[Float[Array, "2"]],
     ) -> PyTree[Float[Array, "..."]]:
-        if self.basis.bounds != (0, 1):
-            raise RuntimeError("Misconfigured basis bounds. To work as a BasisNonlinearity, "
-                               f"a NeMoS basis must have bounds set to (0,1).\n"
-                               f"Provided bounds: {self.basis.bounds}")
         return jax.tree.map(
             lambda c, z, b: self._features_leaf(z, b) @ c, coef, pre_activations, bounds
         )
@@ -91,7 +89,7 @@ class Convolution(eqx.Module):
 
     The lags are the input channels of a 2-D convolution: the kernel spans all lags and
     slides over space only. With ``padding="VALID"`` and unit strides,
-    ``pre_activations[t, i, j] = sum(kernel * stimulus[t, :, i:i + k_rows, j:j + k_cols])``,
+    ``output[t, i, j] = sum(kernel * stimulus[t, :, i:i + k_rows, j:j + k_cols])``,
     where ``k_rows`` and ``k_cols`` are the kernel's spatial size. ``kernel`` is a tree
     with one kernel per channel; the pre-activations have the same structure.
 
@@ -108,9 +106,9 @@ class Convolution(eqx.Module):
 
     def __call__(
         self,
-        kernel: PyTree[Float[Array, "lags k_rows k_cols"]],
+        kernel: PyTree[Float[Array, "lags k_height k_width"]],
         stimulus: Float[Array, "time lags rows cols"],
-    ) -> PyTree[Float[Array, "time p_rows p_cols"]]:
+    ) -> PyTree[Float[Array, "time p_height p_width"]]:
         def conv(k):
             out = jax.lax.conv_general_dilated(stimulus, k[None], self.strides, self.padding)
             return out[:, 0]
@@ -133,6 +131,14 @@ class Pooling(eqx.Module):
         return jax.tree.map(lambda w, a: jnp.einsum("tij,ij->t", a, w), weights, activations)
 
 
+class ReduceAndOffset(eqx.Module):
+    def __call__(
+        self, offset: Float[Array, ""], pooled: PyTree[Float[Array, " time"]]
+    ) -> Float[Array, " time"]:
+        """Reduce the pooled activations, and apply an offset."""
+        return offset + jax.tree.reduce(jnp.add, pooled)
+
+
 class SubunitModel(eqx.Module):
     """Generator signal: offset + sum over channels of pooled subunit activations.
 
@@ -144,6 +150,7 @@ class SubunitModel(eqx.Module):
     convolution: Convolution
     nonlinearity: BasisNonlinearity
     pooling: Pooling
+    reduce: ReduceAndOffset
 
     def pre_activations(
         self, params: SubunitParams, stimulus: Float[Array, "time lags rows cols"]
@@ -165,7 +172,7 @@ class SubunitModel(eqx.Module):
     ) -> Float[Array, " time"]:
         """Pooling and sum over channels (uses ``params.pooling_weights`` and ``params.offset``)."""
         pooled = self.pooling(params.pooling_weights, activations)
-        return params.offset + jax.tree.reduce(jnp.add, pooled)
+        return self.reduce(params.offset, pooled)
 
     def __call__(
         self,
@@ -177,15 +184,3 @@ class SubunitModel(eqx.Module):
         activations = self.activations(params, pre_activations, bounds)
         return self.output(params, activations)
 
-
-def tents(
-    n_basis_funcs: int, fill_strategy: Literal["clamp", "zero"] = "clamp"
-) -> BasisNonlinearity:
-    """Tent (piecewise-linear) nonlinearity: nodes at ``linspace(*bounds, n_basis_funcs)``.
-
-    Safe constructor of a tent nonlinearity. The constructor enforces bounds and fill value.
-    """
-    basis = nmo.basis.BSplineEval(
-        n_basis_funcs=n_basis_funcs, order=2, bounds=(0.0, 1.0), fill_value=0.0
-    )
-    return BasisNonlinearity(basis, fill_strategy)
