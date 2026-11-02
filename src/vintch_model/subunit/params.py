@@ -33,7 +33,7 @@ class SubunitParams(eqx.Module):
     def regularizable_subtrees() -> list[Callable[["SubunitParams"], PyTree]]:
         """Pooling maps and nonlinearity coefficients; never the kernel or the offset.
 
-        This is the selector used internally by nemos regularizer to identify pytree
+        This is the selector used internally by the nemos regularizer to identify pytree
         leaves that will be penalized.
         See the [regularizer](https://nemos-neuro.org/en/latest/developers_notes/06-regularizer.html#interaction-with-parameter-containers)
         for more details.
