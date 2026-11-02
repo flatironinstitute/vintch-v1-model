@@ -130,7 +130,7 @@ class Pooling(eqx.Module):
         weights: PyTree[Float[Array, "p_rows p_cols"]],
         activations: PyTree[Float[Array, "time p_rows p_cols"]],
     ) -> PyTree[Float[Array, " time"]]:
-        return jax.tree.map(lambda w, a: jnp.einsum("tij,ij->t", a, w), weights, activations)
+        return jax.tree.map(lambda w, a: jnp.einsum("ij,tij->t", w, a), weights, activations)
 
 
 class SubunitModel(eqx.Module):
