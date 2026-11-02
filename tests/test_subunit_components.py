@@ -59,7 +59,6 @@ def test_tents_clamp_holds_end_coefficients(x64, dtype):
     np.testing.assert_allclose(out, [-1.0, -1.0, 5.0, 5.0], rtol=1e-6)
 
 
-@pytest.mark.xfail(reason="nemos basis.evaluate does not apply fill_value outside the bounds yet")
 def test_tents_zero_outside(x64):
     out = jax.jit(tents(4, "zero"))(COEF, jnp.array([-10.0, 10.0]), BOUNDS)
     np.testing.assert_allclose(out, [0.0, 0.0])
