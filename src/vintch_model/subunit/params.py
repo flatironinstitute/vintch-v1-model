@@ -3,10 +3,10 @@
 from typing import Callable
 
 from jaxtyping import Array, Float, PyTree
-from nemos.params import ModelParams
+import equinox as eqx
 
 
-class SubunitParams(ModelParams):
+class SubunitParams(eqx.Module):
     """Parameters of the subunit model, grouped by component.
 
     ``kernel``, ``coef`` and ``pooling_weights`` are trees of the same structure, one leaf per
@@ -31,5 +31,11 @@ class SubunitParams(ModelParams):
 
     @staticmethod
     def regularizable_subtrees() -> list[Callable[["SubunitParams"], PyTree]]:
-        """Pooling maps and nonlinearity coefficients; never the kernel or the offset."""
+        """Pooling maps and nonlinearity coefficients; never the kernel or the offset.
+
+        This is the selector used internally by nemos regularizer to identify pytree
+        leaves that will be penalized.
+        See the [regularizer](https://nemos-neuro.org/en/latest/developers_notes/06-regularizer.html#interaction-with-parameter-containers)
+        for more details.
+        """
         return [lambda p: p.pooling_weights, lambda p: p.coef]
