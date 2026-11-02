@@ -1,10 +1,9 @@
 """Helper functions for subunit model."""
 
-from typing import Literal, TYPE_CHECKING
+from typing import Literal
 import nemos as nmo
 
-if TYPE_CHECKING:
-    from .model import BasisNonlinearity
+from .model import BasisNonlinearity
 
 
 def tents(

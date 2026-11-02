@@ -1,13 +1,19 @@
 """Components of vintch_model.subunit (nonlinearity, convolution, pooling) and the
 model that composes them."""
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from vintch_model.subunit import Convolution, Pooling, SubunitModel, SubunitParams, tents
+from vintch_model.subunit import (
+    Convolution,
+    Pooling,
+    ReduceAndOffset,
+    SubunitModel,
+    SubunitParams,
+    tents,
+)
 
 # Tents with bounds (-3, 3) and 4 nodes: nodes at -3, -1, 1, 3.
 BOUNDS = jnp.array([-3.0, 3.0])
@@ -56,21 +62,21 @@ def test_tents_tree_matches_per_channel(x64):
 
 
 def test_convolution_equals_patch_sum(x64):
-    rng = np.random.default_rng(0)
-    stimulus = rng.standard_normal((3, 8, 16, 16))
-    kernel = rng.standard_normal((8, 8, 8))
-    pre_activations = np.asarray(Convolution()(jnp.asarray(kernel), jnp.asarray(stimulus)))
+    keys = jax.random.split(jax.random.PRNGKey(0), 2)
+    stimulus = jax.random.normal(keys[0], shape=(3, 8, 16, 16))
+    kernel = jax.random.normal(keys[1], shape=(8, 8, 8))
+    pre_activations = Convolution()(kernel, stimulus)
     assert pre_activations.shape == (3, 9, 9)
-    expected = np.array([[[np.sum(kernel * stimulus[t, :, i:i + 8, j:j + 8])
+    expected = jnp.array([[[jnp.sum(kernel * stimulus[t, :, i:i + 8, j:j + 8])
                            for j in range(9)] for i in range(9)] for t in range(3)])
     np.testing.assert_allclose(pre_activations, expected, atol=1e-10)
 
 
 def test_convolution_tree_structure(x64):
-    rng = np.random.default_rng(1)
-    stimulus = jnp.asarray(rng.standard_normal((2, 8, 16, 16)))
-    kernel = {"excitatory": jnp.asarray(rng.standard_normal((8, 8, 8))),
-              "suppressive": jnp.asarray(rng.standard_normal((8, 4, 4)))}
+    keys = jax.random.split(jax.random.PRNGKey(10), 3)
+    stimulus = jax.random.normal(keys[0], shape=(2, 8, 16, 16))
+    kernel = {"excitatory": jax.random.normal(keys[1], shape=(8, 8, 8)),
+              "suppressive": jax.random.normal(keys[2], shape=(8, 4, 4))}
     pre_activations = Convolution()(kernel, stimulus)
     assert jax.tree.structure(pre_activations) == jax.tree.structure(kernel)
     assert pre_activations["excitatory"].shape == (2, 9, 9)
@@ -78,35 +84,54 @@ def test_convolution_tree_structure(x64):
 
 
 def test_pooling_equals_weighted_sum(x64):
-    rng = np.random.default_rng(2)
-    weights = {"excitatory": rng.standard_normal((9, 9)), "suppressive": rng.standard_normal((9, 9))}
-    activations = {"excitatory": rng.standard_normal((5, 9, 9)), "suppressive": rng.standard_normal((5, 9, 9))}
-    pooled = Pooling()(jax.tree.map(jnp.asarray, weights), jax.tree.map(jnp.asarray, activations))
+    keys = jax.random.split(jax.random.PRNGKey(10), 4)
+    weights = {"excitatory": jax.random.normal(keys[0], shape=(9, 9)), "suppressive": jax.random.normal(keys[1], shape=(9, 9))}
+    activations = {"excitatory": jax.random.normal(keys[2], shape=(5, 9, 9)), "suppressive": jax.random.normal(keys[3], shape=(5, 9, 9))}
+    pooled = Pooling()(weights, activations)
     for name in weights:
-        expected = np.sum(activations[name] * weights[name], axis=(1, 2))
-        np.testing.assert_allclose(pooled[name], expected, atol=1e-10)
+        expected = jnp.sum(activations[name] * weights[name], axis=(1, 2))
+        np.testing.assert_allclose(pooled[name], expected)
 
 
-def random_params(rng, names, n_basis=16):
+@pytest.mark.parametrize("jit", [False, True])
+@pytest.mark.parametrize("as_list", [False, True])
+def test_reduce_and_offset_sums_channels_plus_offset(x64, jit, as_list):
+    keys = jax.random.split(jax.random.PRNGKey(10), 2)
+    pooled = {"excitatory": jax.random.normal(keys[0], shape=(5,)), "suppressive": jax.random.normal(keys[1], shape=(5,))}
+    offset = jnp.asarray(0.7)
+    expected = 0.7 + pooled["excitatory"] + pooled["suppressive"]
+    if as_list:
+        pooled = list(pooled.values())
+    reduce = jax.jit(ReduceAndOffset()) if jit else ReduceAndOffset()
+    np.testing.assert_allclose(reduce(offset, pooled), expected)
+
+
+@pytest.fixture
+def random_params(request):
+    """Random SubunitParams; request.param = dict(seed, names, n_basis=16)."""
+    seed, names, n_basis = request.param["seed"], request.param["names"], request.param.get("n_basis", 16)
+    keys = jax.random.split(jax.random.PRNGKey(seed), 3)
     return SubunitParams(
-        kernel={n: jnp.asarray(rng.standard_normal((8, 8, 8))) for n in names},
-        coef={n: jnp.asarray(rng.standard_normal(n_basis)) for n in names},
-        pooling_weights={n: jnp.asarray(rng.standard_normal((9, 9))) for n in names},
+        kernel={n: jax.random.normal(jax.random.fold_in(keys[0], i), shape=(8, 8, 8)) for i, n in enumerate(names)},
+        coef={n: jax.random.normal(jax.random.fold_in(keys[1], i), shape=(n_basis,)) for i, n in enumerate(names)},
+        pooling_weights={n: jax.random.normal(jax.random.fold_in(keys[2], i), shape=(9, 9))
+                         for i, n in enumerate(names)},
         offset=jnp.asarray(0.7),
     )
 
 
+@pytest.mark.parametrize("random_params", [dict(seed=3, names=("excitatory", "suppressive"))], indirect=True)
 @pytest.mark.parametrize("jit", [False, True])
-def test_model_equals_composed_stages(x64, jit):
+def test_model_equals_composed_stages(x64, random_params, jit):
     """offset + sum over channels of pool(clamped tents(patch sums)), computed independently."""
-    rng = np.random.default_rng(3)
     names = ("excitatory", "suppressive")
-    params = random_params(rng, names)
-    stimulus = rng.standard_normal((4, 8, 16, 16))
+    params = random_params
+    stimulus = jax.random.normal(jax.random.PRNGKey(3), shape=(4, 8, 16, 16))
     bounds = {n: jnp.array([-20.0, 20.0]) for n in names}          # pre-activations fall inside and outside
-    model = SubunitModel(Convolution(), tents(16), Pooling())
-    call = eqx.filter_jit(model) if jit else model
-    out = call(params, jnp.asarray(stimulus), bounds)
+    model = SubunitModel(Convolution(), tents(16), Pooling(), ReduceAndOffset())
+    call = jax.jit(model) if jit else model
+    out = call(params, stimulus, bounds)
+    stimulus = np.asarray(stimulus)
 
     expected = np.full(4, 0.7)
     nodes = np.linspace(-20.0, 20.0, 16)
@@ -120,8 +145,46 @@ def test_model_equals_composed_stages(x64, jit):
     np.testing.assert_allclose(out, expected, atol=1e-9)
 
 
-def test_regularizable_subtrees_are_pooling_and_coef():
-    params = random_params(np.random.default_rng(4), ("excitatory",))
+@pytest.mark.parametrize("random_params", [dict(seed=4, names=("excitatory",))], indirect=True)
+def test_regularizable_subtrees_are_pooling_and_coef(random_params):
+    params = random_params
     selected = [where(params) for where in SubunitParams.regularizable_subtrees()]
     assert selected[0] is params.pooling_weights
     assert selected[1] is params.coef
+
+
+def no_jit(f):
+    return f
+
+
+@pytest.mark.parametrize("wrap", [jax.jit, no_jit], ids=["jit", "no_jit"])
+def test_end_to_end_stages_match_model(x64, wrap):
+    """Convolution -> tents -> pooling -> reduce, run stage by stage, equals the jitted model."""
+    n_samples, n_lags, n_pix, k_size, n_basis = 20, 3, 10, 4, 6
+    n_pos = n_pix - k_size + 1
+    names = ("excitatory", "suppressive")
+    keys = jax.random.split(jax.random.PRNGKey(121), 5)
+    stimulus = jax.random.normal(keys[0], shape=(n_samples, n_lags, n_pix, n_pix))
+    kernels = {n: jax.random.normal(jax.random.fold_in(keys[1], i), shape=(n_lags, k_size, k_size))
+               for i, n in enumerate(names)}
+    tent_coef = {n: jax.random.normal(jax.random.fold_in(keys[2], i), shape=(n_basis,)) for i, n in enumerate(names)}
+    pooling_weights = {n: jax.random.normal(jax.random.fold_in(keys[3], i), shape=(n_pos, n_pos))
+                       for i, n in enumerate(names)}
+    offset = jax.random.normal(keys[4])
+    tent_bounds = {"excitatory": jnp.array([-2.0, 2.0]), "suppressive": jnp.array([-3.0, 1.0])}
+
+    conv = Convolution(padding="VALID")
+    tent_nl = tents(n_basis, fill_strategy="clamp")
+    pooling = Pooling()
+    reduce = ReduceAndOffset()
+
+    out_conv = wrap(conv)(kernels, stimulus)
+    activations = wrap(tent_nl)(tent_coef, out_conv, bounds=tent_bounds)
+    pooled = wrap(pooling)(pooling_weights, activations)
+    result = wrap(reduce)(offset, pooled)
+    assert result.shape == (n_samples,)
+
+    params = SubunitParams(kernel=kernels, coef=tent_coef, pooling_weights=pooling_weights, offset=offset)
+    model = SubunitModel(convolution=conv, nonlinearity=tent_nl, pooling=pooling, reduce=reduce)
+    result_model = wrap(model)(params, stimulus, bounds=tent_bounds)
+    np.testing.assert_allclose(result_model, result)
