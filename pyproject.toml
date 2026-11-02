@@ -24,7 +24,11 @@ dependencies = [
 
 [project.optional-dependencies]
 torch = ["torch>=1.8"]
-jax = ["jax>=0.4.28"]
+jax = [
+    "equinox",
+    "jax>=0.4.28",
+    "nemos @ git+https://github.com/flatironinstitute/nemos.git@development",
+]
 
 docs = [
      'sphinx',
