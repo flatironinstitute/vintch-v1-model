@@ -20,6 +20,11 @@ BOUNDS = jnp.array([-3.0, 3.0])
 COEF = jnp.array([-1.0, 0.0, 2.0, 5.0])
 
 
+def tol(dtype):
+    """Absolute tolerance for ``dtype``: square root of the machine epsilon."""
+    return jnp.sqrt(jnp.finfo(dtype).eps)
+
+
 @pytest.fixture
 def x64():
     """Run a test in float64, restoring the global setting afterwards."""
@@ -29,8 +34,17 @@ def x64():
     jax.config.update("jax_enable_x64", previous)
 
 
+@pytest.fixture(params=[jnp.float32, jnp.float64], ids=["float32", "float64"])
+def dtype(request):
+    """Run a test in float32 and in float64, restoring the global setting afterwards."""
+    previous = jax.config.jax_enable_x64
+    jax.config.update("jax_enable_x64", request.param == jnp.float64)
+    yield request.param
+    jax.config.update("jax_enable_x64", previous)
+
+
 @pytest.mark.parametrize("jit", [False, True])
-def test_tents_interpolate_between_nodes(x64, jit):
+def test_tents_interpolate_between_nodes(dtype, jit):
     nonlinearity = tents(4)
     call = jax.jit(nonlinearity) if jit else nonlinearity
     pre_activations = jnp.array([-3.0, -2.0, 0.0, 2.5])
@@ -51,7 +65,7 @@ def test_tents_zero_outside(x64):
     np.testing.assert_allclose(out, [0.0, 0.0])
 
 
-def test_tents_tree_matches_per_channel(x64):
+def test_tents_tree_matches_per_channel(dtype):
     nonlinearity = tents(4)
     coef = {"excitatory": COEF, "suppressive": -COEF}
     bounds = {"excitatory": BOUNDS, "suppressive": jnp.array([-1.0, 2.0])}
@@ -61,7 +75,7 @@ def test_tents_tree_matches_per_channel(x64):
         np.testing.assert_allclose(out[name], nonlinearity(coef[name], pre_activations[name], bounds[name]))
 
 
-def test_convolution_equals_patch_sum(x64):
+def test_convolution_equals_patch_sum(dtype):
     keys = jax.random.split(jax.random.PRNGKey(0), 2)
     stimulus = jax.random.normal(keys[0], shape=(3, 8, 16, 16))
     kernel = jax.random.normal(keys[1], shape=(8, 8, 8))
@@ -69,7 +83,7 @@ def test_convolution_equals_patch_sum(x64):
     assert pre_activations.shape == (3, 9, 9)
     expected = jnp.array([[[jnp.sum(kernel * stimulus[t, :, i:i + 8, j:j + 8])
                            for j in range(9)] for i in range(9)] for t in range(3)])
-    np.testing.assert_allclose(pre_activations, expected, atol=1e-10)
+    np.testing.assert_allclose(pre_activations, expected, atol=tol(dtype))
 
 
 def test_convolution_tree_structure(x64):
@@ -83,19 +97,19 @@ def test_convolution_tree_structure(x64):
     assert pre_activations["suppressive"].shape == (2, 13, 13)
 
 
-def test_pooling_equals_weighted_sum(x64):
+def test_pooling_equals_weighted_sum(dtype):
     keys = jax.random.split(jax.random.PRNGKey(10), 4)
     weights = {"excitatory": jax.random.normal(keys[0], shape=(9, 9)), "suppressive": jax.random.normal(keys[1], shape=(9, 9))}
     activations = {"excitatory": jax.random.normal(keys[2], shape=(5, 9, 9)), "suppressive": jax.random.normal(keys[3], shape=(5, 9, 9))}
     pooled = Pooling()(weights, activations)
     for name in weights:
         expected = jnp.sum(activations[name] * weights[name], axis=(1, 2))
-        np.testing.assert_allclose(pooled[name], expected)
+        np.testing.assert_allclose(pooled[name], expected, atol=tol(dtype))
 
 
 @pytest.mark.parametrize("jit", [False, True])
 @pytest.mark.parametrize("as_list", [False, True])
-def test_reduce_and_offset_sums_channels_plus_offset(x64, jit, as_list):
+def test_reduce_and_offset_sums_channels_plus_offset(dtype, jit, as_list):
     keys = jax.random.split(jax.random.PRNGKey(10), 2)
     pooled = {"excitatory": jax.random.normal(keys[0], shape=(5,)), "suppressive": jax.random.normal(keys[1], shape=(5,))}
     offset = jnp.asarray(0.7)
@@ -103,7 +117,7 @@ def test_reduce_and_offset_sums_channels_plus_offset(x64, jit, as_list):
     if as_list:
         pooled = list(pooled.values())
     reduce = jax.jit(ReduceAndOffset()) if jit else ReduceAndOffset()
-    np.testing.assert_allclose(reduce(offset, pooled), expected)
+    np.testing.assert_allclose(reduce(offset, pooled), expected, atol=tol(dtype))
 
 
 @pytest.fixture
@@ -122,7 +136,7 @@ def random_params(request):
 
 @pytest.mark.parametrize("random_params", [dict(seed=3, names=("excitatory", "suppressive"))], indirect=True)
 @pytest.mark.parametrize("jit", [False, True])
-def test_model_equals_composed_stages(x64, random_params, jit):
+def test_model_equals_composed_stages(dtype, random_params, jit):
     """offset + sum over channels of pool(clamped tents(patch sums)), computed independently."""
     names = ("excitatory", "suppressive")
     params = random_params
@@ -142,7 +156,7 @@ def test_model_equals_composed_stages(x64, random_params, jit):
                             for j in range(9)] for i in range(9)] for t in range(4)])
         activation = np.interp(pre_activations, nodes, coef)                   # holds the end values = clamp
         expected += np.sum(activation * weights, axis=(1, 2))
-    np.testing.assert_allclose(out, expected, atol=1e-9)
+    np.testing.assert_allclose(out, expected, atol=tol(dtype))
 
 
 @pytest.mark.parametrize("random_params", [dict(seed=4, names=("excitatory",))], indirect=True)
@@ -158,7 +172,7 @@ def no_jit(f):
 
 
 @pytest.mark.parametrize("wrap", [jax.jit, no_jit], ids=["jit", "no_jit"])
-def test_end_to_end_stages_match_model(x64, wrap):
+def test_end_to_end_stages_match_model(dtype, wrap):
     """Convolution -> tents -> pooling -> reduce, run stage by stage, equals the jitted model."""
     n_samples, n_lags, n_pix, k_size, n_basis = 20, 3, 10, 4, 6
     n_pos = n_pix - k_size + 1
