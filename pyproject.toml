@@ -50,7 +50,7 @@ Repository = "https://github.com/flatironinstitute/vintch-v1-model"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["vintch_model"]
+include = ["vintch_model*"]
 
 [build-system]
 requires = ["setuptools>=61.0"]
