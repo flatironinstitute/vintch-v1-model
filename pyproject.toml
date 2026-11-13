@@ -6,7 +6,7 @@ authors = [
 ]
 description = "Implementation of the Vintch model for V1 neurons"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 license = { text = "MIT" }  # or your actual license
 classifiers = [
     "Intended Audience :: Science/Research",
