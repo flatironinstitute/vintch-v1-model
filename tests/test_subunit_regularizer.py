@@ -71,7 +71,7 @@ def test_penalized_loss_is_loss_plus_penalty(x64, random_params):
     stimulus = jnp.asarray(rng.standard_normal((6, 8, 16, 16)))
     y = jnp.asarray(rng.standard_normal(6))
     bounds = {n: jnp.array([-20.0, 20.0]) for n in names}
-    loss = Loss(SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling()),
+    loss = Loss(SubunitModel(Convolution(), tents(16), Pooling(), kernel_normalization=NoNormalization()),
                 nmo.observation_models.GaussianObservations())
     regularizer, strength = Ridge(), 0.2
 

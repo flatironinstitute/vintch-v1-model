@@ -221,7 +221,7 @@ def test_l2_normalization(x64, random_params):
     for n in names:
         np.testing.assert_allclose(jnp.linalg.norm(normalized[n]), 1.0, rtol=1e-12)
 
-    model = SubunitModel(Convolution(), tents(16), Pooling(), ReduceAndOffset(), kernel_normalization=L2Normalization())
+    model = SubunitModel(Convolution(), tents(16), Pooling(), SumAndOffset(), kernel_normalization=L2Normalization())
     stimulus = jax.random.normal(jax.random.PRNGKey(10), shape=(4, 8, 16, 16))
     bounds = {n: jnp.array([-3.0, 3.0]) for n in names}
     scaled = eqx.tree_at(lambda p: p.kernel, params, {n: 7.0 * params.kernel[n] for n in names})

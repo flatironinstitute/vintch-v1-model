@@ -26,7 +26,7 @@ def test_gaussian_loss_is_mean_squared_error(x64, random_params, jit):
     stimulus = jnp.asarray(rng.standard_normal((6, 8, 16, 16)))
     y = jnp.asarray(rng.standard_normal(6))
     bounds = {n: jnp.array([-20.0, 20.0]) for n in names}
-    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
+    model = SubunitModel(Convolution(), tents(16), Pooling(), kernel_normalization=NoNormalization())
     loss = Loss(model, nmo.observation_models.GaussianObservations())
 
     call = eqx.filter_jit(loss) if jit else loss
@@ -42,11 +42,11 @@ def test_losses_from_stages_match_full_loss(x64, random_params):
     stimulus = jnp.asarray(rng.standard_normal((6, 8, 16, 16)))
     y = jnp.asarray(rng.standard_normal(6))
     bounds = {n: jnp.array([-20.0, 20.0]) for n in names}
-    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
+    model = SubunitModel(Convolution(), tents(16), Pooling(), kernel_normalization=NoNormalization())
     observations = nmo.observation_models.GaussianObservations()
 
-    pre_activations = model.pre_activations(params, stimulus)
-    activations = model.activations(params, pre_activations, bounds)
+    pre_activations = model.convolution(model.kernel_normalization(params.kernel), stimulus)
+    activations = model.channel_nonlinearity(params.coef, pre_activations, bounds)
     full = Loss(model, observations)(params, stimulus, y, bounds)
     np.testing.assert_allclose(
         LossFromPreActivations(model, observations)(params, pre_activations, y, bounds), full, rtol=1e-12

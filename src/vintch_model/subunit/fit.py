@@ -165,7 +165,7 @@ def replica_fit(
 
     def inner_round(_, carry):
         params, bounds, pre_activations = carry
-        activations = model.activations(params, pre_activations, bounds)
+        activations = model.channel_nonlinearity(params.coef, pre_activations, bounds)
         params = run_block(pooling_solver, POOLING_BLOCK, params, activations, y)
         bounds = replica_quantile_bounds(pre_activations)
         params = run_block(tent_solver, TENT_BLOCK, params, pre_activations, y, bounds)
@@ -173,7 +173,7 @@ def replica_fit(
 
     def iteration(carry):
         i, params, bounds, losses, _ = carry
-        pre_activations = model.pre_activations(params, stimulus)
+        pre_activations = model.convolution(model.kernel_normalization(params.kernel), stimulus)
         params, bounds, _ = jax.lax.fori_loop(
             0, n_inner, inner_round, (params, bounds, pre_activations)
         )

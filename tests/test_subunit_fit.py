@@ -16,8 +16,8 @@ from vintch_model.subunit import (
     LossFromPreActivations,
     NoNormalization,
     Pooling,
-    ReduceAndOffset,
     SubunitModel,
+    SumAndOffset,
     SubunitParams,
     tents,
 )
@@ -55,7 +55,7 @@ def test_pooling_block_matches_closed_form(x64, random_params, solver_name, solv
     """Pooling weights and offset solved with kernel and coef fixed = penalized least squares."""
     rng = np.random.default_rng(13)
     params = random_params(rng, NAMES)
-    model = SubunitModel(Convolution(), tents(16), Pooling(), ReduceAndOffset())
+    model = SubunitModel(Convolution(), tents(16), Pooling(), SumAndOffset())
     loss = LossFromActivations(model, nmo.observation_models.GaussianObservations())
     stimulus = jnp.asarray(rng.standard_normal((300, 8, 16, 16)))
     y = jnp.asarray(rng.standard_normal(300))
@@ -63,7 +63,7 @@ def test_pooling_block_matches_closed_form(x64, random_params, solver_name, solv
     lam = 0.3
 
     # kernel and coef are fixed, so the activations are computed once
-    activations = model.activations(params, model.pre_activations(params, stimulus), bounds)
+    activations = model.channel_nonlinearity(params.coef, model.convolution(model.kernel_normalization(params.kernel), stimulus), bounds)
     learned = SubunitParams(kernel=False, coef=False, pooling_weights=True, offset=True)
     solver = block_solver(loss, learned, Ridge(), lam, params,
                           solver_name=solver_name, **solver_kwargs)
@@ -91,19 +91,19 @@ def solve_tent_block(random_params, lam, ratio):
     """
     rng = np.random.default_rng(15)
     params = random_params(rng, NAMES)
-    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
+    model = SubunitModel(Convolution(), tents(16), Pooling(), kernel_normalization=NoNormalization())
     loss = LossFromPreActivations(model, nmo.observation_models.GaussianObservations())
     stimulus = jnp.asarray(rng.standard_normal((300, 8, 16, 16)))
     y = np.asarray(rng.standard_normal(300))
 
     # the kernel is fixed, so the pre-activations and the bounds are computed once
-    pre_activations = model.pre_activations(params, stimulus)
+    pre_activations = model.convolution(model.kernel_normalization(params.kernel), stimulus)
     bounds = replica_quantile_bounds(pre_activations)
     learned = SubunitParams(kernel=False, coef=True, pooling_weights=False, offset=True)
     solver = block_solver(loss, learned, DifferencePenalty(2), (lam, ratio), params)
     solved = run_block(solver, learned, params, pre_activations, jnp.asarray(y), bounds)
 
-    features = model.nonlinearity.features(pre_activations, bounds)
+    features = jax.tree.map(model.channel_nonlinearity._features_leaf, pre_activations, bounds)
     F = np.concatenate([np.einsum("tijl,ij->tl", np.asarray(features[n]),
                                   np.asarray(params.pooling_weights[n])) for n in NAMES], axis=1)
     X = np.column_stack([np.ones(300), F])
@@ -119,7 +119,8 @@ def solve_tent_block(random_params, lam, ratio):
     def as_beta(p):
         return np.concatenate([[float(p.offset)]] + [np.asarray(p.coef[n]) for n in NAMES])
 
-    prediction = np.asarray(model.output(solved, model.activations(solved, pre_activations, bounds)))
+    prediction = np.asarray(model.reduction(solved.offset, model.pooling(
+        solved.pooling_weights, model.channel_nonlinearity(solved.coef, pre_activations, bounds))))
     return params, solved, X, normal_matrix, normal_rhs, objective, as_beta, prediction
 
 
@@ -173,10 +174,10 @@ def solve_kernel_block(random_params, normalization, start_scale=1.0):
     rng = np.random.default_rng(16)
     # small problem: 2 lags of 4x4 kernels on 8x8 frames, 5x5 positions, 64 unknowns
     params_true = random_params(rng, NAMES, kernel_shape=(2, 4, 4), pool_shape=(5, 5))
-    model = SubunitModel(normalization, Convolution(), tents(16), Pooling())
+    model = SubunitModel(Convolution(), tents(16), Pooling(), kernel_normalization=normalization)
     loss = Loss(model, nmo.observation_models.GaussianObservations())
     stimulus = jnp.asarray(rng.standard_normal((400, 2, 8, 8)))
-    bounds = replica_quantile_bounds(model.pre_activations(params_true, stimulus))
+    bounds = replica_quantile_bounds(model.convolution(model.kernel_normalization(params_true.kernel), stimulus))
     y = model(params_true, stimulus, bounds)
 
     # start: each kernel scaled and perturbed by 10% of its own size
@@ -217,9 +218,9 @@ def test_replica_fit_lowers_the_loss(x64, random_params):
     iteration and ends at least 1000 times below its first value."""
     rng = np.random.default_rng(17)
     params_true = random_params(rng, NAMES, kernel_shape=(2, 4, 4), pool_shape=(5, 5))
-    model = SubunitModel(NoNormalization(), Convolution(), tents(16), Pooling())
+    model = SubunitModel(Convolution(), tents(16), Pooling(), kernel_normalization=NoNormalization())
     stimulus = jnp.asarray(rng.standard_normal((400, 2, 8, 8)))
-    bounds = replica_quantile_bounds(model.pre_activations(params_true, stimulus))
+    bounds = replica_quantile_bounds(model.convolution(model.kernel_normalization(params_true.kernel), stimulus))
     y = model(params_true, stimulus, bounds)
     start_kernel = {n: k + 0.1 * jnp.std(k) * jnp.asarray(rng.standard_normal(k.shape))
                     for n, k in params_true.kernel.items()}

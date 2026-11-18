@@ -44,7 +44,7 @@ class Loss(eqx.Module):
 class LossFromPreActivations(eqx.Module):
     """``Loss`` entered at the pre-activations, for fits that hold the kernel fixed.
 
-    The pre-activations are computed once (``model.pre_activations``) and passed in, so
+    The pre-activations are computed once (``model.convolution`` of the normalized kernel) and passed in, so
     the convolution is not repeated at every evaluation.
 
     Parameters
@@ -65,15 +65,17 @@ class LossFromPreActivations(eqx.Module):
         y: Float[Array, " time"],
         bounds: PyTree[Float[Array, "2"]],
     ) -> Float[Array, ""]:
-        activations = self.model.activations(params, pre_activations, bounds)
-        prediction = self.model.output(params, activations)
+        activations = self.model.channel_nonlinearity(params.coef, pre_activations, bounds)
+        pooled = self.model.pooling(params.pooling_weights, activations)
+        reduced = self.model.reduction(params.offset, pooled)
+        prediction = self.model.output_nonlinearity(params.output_coef, reduced)
         return self.observation_model._negative_log_likelihood(y, prediction)
 
 
 class LossFromActivations(eqx.Module):
     """``Loss`` entered at the activations, for fits that hold the kernel and ``coef`` fixed.
 
-    The activations are computed once (``model.activations``) and passed in, so the
+    The activations are computed once (``model.channel_nonlinearity``) and passed in, so the
     convolution and the nonlinearity are not repeated at every evaluation.
 
     Parameters
@@ -93,5 +95,7 @@ class LossFromActivations(eqx.Module):
         activations: PyTree[Float[Array, "time p_rows p_cols"]],
         y: Float[Array, " time"],
     ) -> Float[Array, ""]:
-        prediction = self.model.output(params, activations)
+        pooled = self.model.pooling(params.pooling_weights, activations)
+        reduced = self.model.reduction(params.offset, pooled)
+        prediction = self.model.output_nonlinearity(params.output_coef, reduced)
         return self.observation_model._negative_log_likelihood(y, prediction)
