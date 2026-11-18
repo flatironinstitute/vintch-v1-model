@@ -28,6 +28,7 @@ class SubunitParams(eqx.Module):
     coef: PyTree[Float[Array, " n_basis"]]
     pooling_weights: PyTree[Float[Array, "p_rows p_cols"]]
     offset: Float[Array, ""]
+    output_coef: Float[Array, "n_coef"] | None = None
 
     @staticmethod
     def regularizable_subtrees() -> list[Callable[["SubunitParams"], PyTree]]:

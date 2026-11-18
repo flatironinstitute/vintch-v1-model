@@ -13,7 +13,7 @@ NeMoS is used wherever it fits: the tent nonlinearity is an order-2 B-spline bas
 and any other NeMoS basis can be wrapped the same way.
 """
 
-from typing import Any, Literal
+from typing import Callable
 
 import equinox as eqx
 import jax
@@ -75,12 +75,19 @@ class Pooling(eqx.Module):
         )
 
 
-class ReduceAndOffset(eqx.Module):
+class SumAndOffset(eqx.Module):
     def __call__(
         self, offset: Float[Array, ""], pooled: PyTree[Float[Array, " time"]]
     ) -> Float[Array, " time"]:
         """Reduce the pooled activations, and apply an offset."""
         return offset + jax.tree.reduce(jnp.add, pooled)
+
+
+class Identity(eqx.Module):
+
+    @staticmethod
+    def __call__(_, x):
+        return x
 
 
 class SubunitModel(eqx.Module):
@@ -91,39 +98,13 @@ class SubunitModel(eqx.Module):
     once and start from the stage it changes.
     """
 
-    convolution: Convolution
-    nonlinearity: BasisNonlinearity
-    pooling: Pooling
-    reducing: ReduceAndOffset
-
-    def pre_activations(
-        self,
-        kernel: PyTree[Float[Array, "lags k_rows k_cols"]],
-        stimulus: Float[Array, "time lags rows cols"],
-    ) -> PyTree[Float[Array, "time p_rows p_cols"]]:
-        """Kernel applied at every position (uses ``params.kernel``)."""
-        return self.convolution(kernel, stimulus)
-
-    def activations(
-        self,
-        coef: PyTree[Float[Array, " n_basis"]],
-        pre_activations: PyTree[Float[Array, "time p_rows p_cols"]],
-        bounds: PyTree[Float[Array, "2"]],
-    ) -> PyTree[Float[Array, "time p_rows p_cols"]]:
-        """Subunit nonlinearity (uses ``params.coef``)."""
-        return self.nonlinearity(coef, pre_activations, bounds)
-
-    def pool(
-        self,
-        pooling_weights: PyTree[Float[Array, "p_rows p_cols"]],
-        activations: PyTree[Float[Array, "time p_rows p_cols"]],
-    ) -> PyTree[Float[Array, " time"]]:
-        return self.pooling(pooling_weights, activations)
-
-    def reduce(
-        self, offset: Float[Array, ""], pooled: PyTree[Float[Array, " time"]]
-    ) -> Float[Array, " time"]:
-        return self.reducing(offset, pooled)
+    convolution: Convolution = Convolution()
+    channel_nonlinearity: BasisNonlinearity = BasisNonlinearity()
+    pooling: Pooling = Pooling()
+    reduction: SumAndOffset = SumAndOffset()
+    output_nonlinearity: Callable[
+        [PyTree[Float[Array, "n_coef"]], Float[Array, " time"]], Float[Array, " time"]
+    ] = Identity()
 
     def __call__(
         self,
@@ -131,7 +112,8 @@ class SubunitModel(eqx.Module):
         stimulus: Float[Array, "time lags rows cols"],
         bounds: PyTree[Float[Array, "2"]],
     ) -> Float[Array, " time"]:
-        pre_activations = self.pre_activations(params.kernel, stimulus)
-        activations = self.activations(params.coef, pre_activations, bounds)
-        pooled = self.pool(params.pooling_weights, activations)
-        return self.reduce(params.offset, pooled)
+        pre_activations = self.convolution(params.kernel, stimulus)
+        activations = self.channel_nonlinearity(params.coef, pre_activations, bounds)
+        pooled = self.pooling(params.pooling_weights, activations)
+        reduced = self.reduction(params.offset, pooled)
+        return self.output_nonlinearity(params.output_coef, reduced)

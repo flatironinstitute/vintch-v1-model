@@ -9,7 +9,7 @@ import pytest
 from vintch_model.subunit import (
     Convolution,
     Pooling,
-    ReduceAndOffset,
+    SumAndOffset,
     SubunitModel,
     SubunitParams,
     tents,
@@ -115,7 +115,7 @@ def test_reduce_and_offset_sums_channels_plus_offset(dtype, jit, as_list):
     expected = 0.7 + pooled["excitatory"] + pooled["suppressive"]
     if as_list:
         pooled = list(pooled.values())
-    reduce = jax.jit(ReduceAndOffset()) if jit else ReduceAndOffset()
+    reduce = jax.jit(SumAndOffset()) if jit else SumAndOffset()
     np.testing.assert_allclose(reduce(offset, pooled), expected, atol=tol(dtype))
 
 
@@ -141,7 +141,7 @@ def test_model_equals_composed_stages(dtype, random_params, jit):
     params = random_params
     stimulus = jax.random.normal(jax.random.PRNGKey(3), shape=(4, 8, 16, 16))
     bounds = {n: jnp.array([-20.0, 20.0]) for n in names}          # pre-activations fall inside and outside
-    model = SubunitModel(Convolution(), tents(16), Pooling(), ReduceAndOffset())
+    model = SubunitModel(Convolution(), tents(16), Pooling(), SumAndOffset())
     call = jax.jit(model) if jit else model
     out = call(params, stimulus, bounds)
     stimulus = np.asarray(stimulus)
@@ -189,7 +189,7 @@ def test_end_to_end_stages_match_model(dtype, wrap):
     conv = Convolution(padding="VALID")
     tent_nl = tents(n_basis, fill_strategy="clamp")
     pooling = Pooling()
-    reduce = ReduceAndOffset()
+    reduce = SumAndOffset()
 
     out_conv = wrap(conv)(kernels, stimulus)
     activations = wrap(tent_nl)(tent_coef, out_conv, bounds=tent_bounds)
@@ -198,6 +198,6 @@ def test_end_to_end_stages_match_model(dtype, wrap):
     assert result.shape == (n_samples,)
 
     params = SubunitParams(kernel=kernels, coef=tent_coef, pooling_weights=pooling_weights, offset=offset)
-    model = SubunitModel(convolution=conv, nonlinearity=tent_nl, pooling=pooling, reducing=reduce)
+    model = SubunitModel(convolution=conv, channel_nonlinearity=tent_nl, pooling=pooling, reduction=reduce)
     result_model = wrap(model)(params, stimulus, bounds=tent_bounds)
     np.testing.assert_allclose(result_model, result)
