@@ -36,7 +36,7 @@ class SubunitParams(eqx.Module):
 
         This is the selector used internally by the nemos regularizer to identify pytree
         leaves that will be penalized.
-        See the [regularizer](https://nemos-neuro.org/en/latest/developers_notes/06-regularizer.html#interaction-with-parameter-containers)
+        See the `regularizer <https://nemos-neuro.org/en/latest/developers_notes/06-regularizer.html#interaction-with-parameter-containers>`_
         for more details.
         """
         return [lambda p: p.pooling_weights, lambda p: p.coef]
