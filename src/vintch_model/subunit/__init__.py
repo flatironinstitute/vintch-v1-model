@@ -1,5 +1,5 @@
 """Convolutional subunit model (clean implementation)."""
 
-from .model import BasisNonlinearity, Convolution, Pooling, ReduceAndOffset, SubunitModel
+from .basis import BasisNonlinearity, tents
+from .model import Convolution, Pooling, ReduceAndOffset, SubunitModel
 from .params import SubunitParams
-from .helpers import tents

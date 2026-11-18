@@ -20,68 +20,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PyTree
 
+from .basis import BasisNonlinearity
 from .params import SubunitParams
-
-
-class BasisNonlinearity(eqx.Module):
-    """Nonlinearity f(s) = sum_l coef[l] * B_l(u), with u = (s - lo) / (hi - lo).
-
-    The nonlinearity is built from a one-dimensional NeMoS basis defined on the
-    interval (0, 1). Before the basis is evaluated, each pre-activation ``s`` is rescaled
-    to ``u = (s - lo) / (hi - lo)``, where ``bounds = (lo, hi)`` is passed to each call.
-    This way the basis covers pre-activations from ``lo`` to ``hi``.
-
-    Parameters
-    ----------
-    basis :
-        A NeMoS basis with bounds (0, 1), e.g. ``BSplineEval(order=2)`` for tents.
-    fill_strategy :
-        Behavior for pre-activations outside ``bounds``: ``"clamp"`` evaluates them at the
-        nearest end; ``"zero"`` gives the basis' ``fill_value`` (0 for ``tents``).
-        Note that "clamp" is the original choice in Vintch 2015.
-
-    Notes
-    -----
-    The basis must have its bounds fixed to (0, 1). Without fixed bounds, NeMoS
-    rescales each input to its own range, so the same input would give different
-    values on different data. The rescaling to ``(lo, hi)`` is done here instead, with
-    ``bounds`` passed to each call: the bounds move during a fit, and the basis is a
-    static field, so changing its bounds would trigger recompilation.
-    """
-    # still needed to mark field as static
-    basis: Any = eqx.field(static=True)
-    fill_strategy: Literal["clamp", "zero"] = eqx.field(static=True)
-
-    def __init__(self, basis, fill_strategy: Literal["zero", "clamp"] = "clamp"):
-        bounds = getattr(basis, "bounds", (0, 1))
-        if bounds != (0, 1):
-            raise ValueError("Misconfigured basis bounds. To work as a BasisNonlinearity, "
-                               f"a NeMoS basis must have bounds set to (0,1).\n"
-                               f"Provided bounds: {bounds}")
-        self.basis = basis
-        self.fill_strategy = fill_strategy
-
-    def _features_leaf(
-        self, pre_activations: Float[Array, "..."], bounds: Float[Array, "2"]
-    ) -> Float[Array, "... n_basis"]:
-        """Apply the basis to an array leaf."""
-        lo, hi = bounds
-        u = (pre_activations - lo) / (hi - lo)
-        if self.fill_strategy == "clamp":
-            # Largest value below 1 in u's dtype: in float32, the jitted nemos B-spline
-            # gives all zeros at an input exactly on the upper bound.
-            u = jnp.clip(u, 0.0, jnp.nextafter(jnp.ones((), u.dtype), 0))
-        return self.basis.evaluate(u)
-
-    def __call__(
-        self,
-        coef: PyTree[Float[Array, " n_basis"]],
-        pre_activations: PyTree[Float[Array, "..."]],
-        bounds: PyTree[Float[Array, "2"]],
-    ) -> PyTree[Float[Array, "..."]]:
-        return jax.tree.map(
-            lambda c, z, b: self._features_leaf(z, b) @ c, coef, pre_activations, bounds
-        )
 
 
 class Convolution(eqx.Module):
@@ -110,7 +50,9 @@ class Convolution(eqx.Module):
         stimulus: Float[Array, "time lags rows cols"],
     ) -> PyTree[Float[Array, "time p_height p_width"]]:
         def conv(k):
-            out = jax.lax.conv_general_dilated(stimulus, k[None], self.strides, self.padding)
+            out = jax.lax.conv_general_dilated(
+                stimulus, k[None], self.strides, self.padding
+            )
             return out[:, 0]
 
         return jax.tree.map(conv, kernel)
@@ -128,7 +70,9 @@ class Pooling(eqx.Module):
         weights: PyTree[Float[Array, "p_rows p_cols"]],
         activations: PyTree[Float[Array, "time p_rows p_cols"]],
     ) -> PyTree[Float[Array, " time"]]:
-        return jax.tree.map(lambda w, a: jnp.einsum("ij,tij->t", w, a), weights, activations)
+        return jax.tree.map(
+            lambda w, a: jnp.einsum("ij,tij->t", w, a), weights, activations
+        )
 
 
 class ReduceAndOffset(eqx.Module):
@@ -168,7 +112,9 @@ class SubunitModel(eqx.Module):
         return self.nonlinearity(params.coef, pre_activations, bounds)
 
     def output(
-        self, params: SubunitParams, activations: PyTree[Float[Array, "time p_rows p_cols"]]
+        self,
+        params: SubunitParams,
+        activations: PyTree[Float[Array, "time p_rows p_cols"]],
     ) -> Float[Array, " time"]:
         """Pooling and sum over channels (uses ``params.pooling_weights`` and ``params.offset``)."""
         pooled = self.pooling(params.pooling_weights, activations)
@@ -183,4 +129,3 @@ class SubunitModel(eqx.Module):
         pre_activations = self.pre_activations(params, stimulus)
         activations = self.activations(params, pre_activations, bounds)
         return self.output(params, activations)
-

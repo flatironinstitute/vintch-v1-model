@@ -2,8 +2,8 @@
 
 from typing import Callable
 
-from jaxtyping import Array, Float, PyTree
 import equinox as eqx
+from jaxtyping import Array, Float, PyTree
 
 
 class SubunitParams(eqx.Module):
