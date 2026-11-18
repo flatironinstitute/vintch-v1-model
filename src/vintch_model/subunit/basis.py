@@ -52,7 +52,7 @@ class BasisNonlinearity(eqx.Module):
             raise ValueError(
                 "Misconfigured basis bounds. To work as a BasisNonlinearity, "
                 f"a NeMoS basis must have bounds set to (0,1).\n"
-                f"Provided bounds: {bounds}"
+                f"Basis has {bounds=}"
             )
 
         if isinstance(basis, int):
