@@ -80,8 +80,14 @@ def test_convolution_equals_patch_sum(dtype):
     kernel = jax.random.normal(keys[1], shape=(8, 8, 8))
     pre_activations = Convolution()(kernel, stimulus)
     assert pre_activations.shape == (3, 9, 9)
-    expected = jnp.array([[[jnp.sum(kernel * stimulus[t, :, i:i + 8, j:j + 8])
-                           for j in range(9)] for i in range(9)] for t in range(3)])
+
+    # convolve manually with a loop (valid mode)
+    expected = np.full((3, 9, 9), np.nan)
+    for t in range(3):
+        for i in range(9):
+            for j in range(9):
+                stim_patch = stimulus[t, :, i:i + 8, j:j + 8]
+                expected[t, i, j] = jnp.sum(stim_patch * kernel)
     np.testing.assert_allclose(pre_activations, expected, atol=tol(dtype))
 
 
