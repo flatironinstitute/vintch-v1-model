@@ -94,31 +94,36 @@ class SubunitModel(eqx.Module):
     convolution: Convolution
     nonlinearity: BasisNonlinearity
     pooling: Pooling
-    reduce: ReduceAndOffset
+    reducing: ReduceAndOffset
 
     def pre_activations(
-        self, params: SubunitParams, stimulus: Float[Array, "time lags rows cols"]
+        self,
+        kernel: PyTree[Float[Array, "lags k_rows k_cols"]],
+        stimulus: Float[Array, "time lags rows cols"],
     ) -> PyTree[Float[Array, "time p_rows p_cols"]]:
         """Kernel applied at every position (uses ``params.kernel``)."""
-        return self.convolution(params.kernel, stimulus)
+        return self.convolution(kernel, stimulus)
 
     def activations(
         self,
-        params: SubunitParams,
+        coef: PyTree[Float[Array, " n_basis"]],
         pre_activations: PyTree[Float[Array, "time p_rows p_cols"]],
         bounds: PyTree[Float[Array, "2"]],
     ) -> PyTree[Float[Array, "time p_rows p_cols"]]:
         """Subunit nonlinearity (uses ``params.coef``)."""
-        return self.nonlinearity(params.coef, pre_activations, bounds)
+        return self.nonlinearity(coef, pre_activations, bounds)
 
-    def output(
+    def pool(
         self,
-        params: SubunitParams,
+        pooling_weights: PyTree[Float[Array, "p_rows p_cols"]],
         activations: PyTree[Float[Array, "time p_rows p_cols"]],
+    ) -> PyTree[Float[Array, " time"]]:
+        return self.pooling(pooling_weights, activations)
+
+    def reduce(
+        self, offset: Float[Array, ""], pooled: PyTree[Float[Array, " time"]]
     ) -> Float[Array, " time"]:
-        """Pooling and sum over channels (uses ``params.pooling_weights`` and ``params.offset``)."""
-        pooled = self.pooling(params.pooling_weights, activations)
-        return self.reduce(params.offset, pooled)
+        return self.reducing(offset, pooled)
 
     def __call__(
         self,
@@ -126,6 +131,7 @@ class SubunitModel(eqx.Module):
         stimulus: Float[Array, "time lags rows cols"],
         bounds: PyTree[Float[Array, "2"]],
     ) -> Float[Array, " time"]:
-        pre_activations = self.pre_activations(params, stimulus)
-        activations = self.activations(params, pre_activations, bounds)
-        return self.output(params, activations)
+        pre_activations = self.pre_activations(params.kernel, stimulus)
+        activations = self.activations(params.coef, pre_activations, bounds)
+        pooled = self.pool(params.pooling_weights, activations)
+        return self.reduce(params.offset, pooled)

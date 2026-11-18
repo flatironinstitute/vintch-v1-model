@@ -198,6 +198,6 @@ def test_end_to_end_stages_match_model(dtype, wrap):
     assert result.shape == (n_samples,)
 
     params = SubunitParams(kernel=kernels, coef=tent_coef, pooling_weights=pooling_weights, offset=offset)
-    model = SubunitModel(convolution=conv, nonlinearity=tent_nl, pooling=pooling, reduce=reduce)
+    model = SubunitModel(convolution=conv, nonlinearity=tent_nl, pooling=pooling, reducing=reduce)
     result_model = wrap(model)(params, stimulus, bounds=tent_bounds)
     np.testing.assert_allclose(result_model, result)
