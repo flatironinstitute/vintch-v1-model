@@ -43,7 +43,7 @@ docs = [
      "jupytext",
 ]
 
-dev = ["pytest"]
+dev = ["pytest", "torch"]
 
 [project.urls]
 Repository = "https://github.com/flatironinstitute/vintch-v1-model"
