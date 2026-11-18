@@ -109,7 +109,7 @@ class SubunitModel(eqx.Module):
     def __call__(
         self,
         params: SubunitParams,
-        stimulus: Float[Array, "time lags rows cols"],
+        stimulus: Float[Array, "time lags pixel_rows pixel_cols"],
         bounds: PyTree[Float[Array, "2"]],
     ) -> Float[Array, " time"]:
         pre_activations = self.convolution(params.kernel, stimulus)

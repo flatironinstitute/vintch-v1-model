@@ -24,9 +24,9 @@ class SubunitParams(eqx.Module):
         Constant added to the sum of the channels.
     """
 
-    kernel: PyTree[Float[Array, "lags k_rows k_cols"]]
+    kernel: PyTree[Float[Array, "lags kernel_rows kernel_cols"]]
     coef: PyTree[Float[Array, " n_basis"]]
-    pooling_weights: PyTree[Float[Array, "p_rows p_cols"]]
+    pooling_weights: PyTree[Float[Array, "pixel_rows pixel_cols"]]
     offset: Float[Array, ""]
     output_coef: Float[Array, "n_coef"] | None = None
 
